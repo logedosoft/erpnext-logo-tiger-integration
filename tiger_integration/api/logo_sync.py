@@ -11,6 +11,50 @@ import requests
 from bs4 import BeautifulSoup
 import html
 
+def get_logo_mapping_for(data_type, erp_code, throw_exception = False, docLObjectServiceSettings = None):
+	#Gets info from LOGO Object Service Settings -> Mappings table
+	dctResult = frappe._dict({
+		"op_result": False,
+		"op_message": ""
+	})
+
+	if not docLObjectServiceSettings:
+		docLObjectServiceSettings = frappe.get_doc("LOGO Object Service Settings")
+
+	for mapping in docLObjectServiceSettings.mappings:
+		if mapping.data_type == data_type:
+			if mapping.erp_code == erp_code:
+				dctResult.op_message = mapping.logo_code
+				dctResult.op_result = True
+
+	if dctResult.op_result == False and throw_exception == True:
+		frappe.throw(_("{0} tipinde {1} için eşleştirme bulunamadı! LOGO Object Service Settings'de kontrol ediniz").format(data_type, erp_code))
+
+	return dctResult
+
+def validate_export_to_logo(doctype, docname):
+	doc = frappe.get_doc(doctype, docname)
+	doc.check_permission("read")
+
+	if doctype == "Customer":
+		#Payment Term, default billing address
+		if not doc.payment_terms:
+			frappe.throw(_("Ödeme Şekli alanı boş bırakılmamalıdır!"))
+
+		#Check billing address
+		dctBillingAddress = frappe.get_all("Address",
+			filters=[
+				["Dynamic Link", "link_doctype", "=", "Customer"],
+				["Dynamic Link", "link_name", "=", doc.name],
+				["is_primary_address", "=", 1],
+				["address_type", "=", "Billing"]
+			],
+			fields=["name"],
+			limit=1
+		)
+		if not dctBillingAddress:
+			frappe.throw(_("Adres tanımlı olmalıdır!"))
+
 @frappe.whitelist(allow_guest=False)
 def export_to_logo(doctype, docname):
 	dctResult = frappe._dict({
@@ -27,11 +71,13 @@ def export_to_logo(doctype, docname):
 	docLObjectServiceSettings.check_permission("read")
 
 	try:
+		validate_export_to_logo(doctype, docname)
 
 		if doc.doctype == "Item":
 			dataType = 0
 
-		soap_body = f"""<soapenv:Envelope 
+			soap_body = f"""
+<soapenv:Envelope 
 	xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" 
 	xmlns:tem="http://tempuri.org/">
    <soapenv:Header/>
@@ -106,6 +152,131 @@ def export_to_logo(doctype, docname):
    </soapenv:Body>
 </soapenv:Envelope>
 	"""
+
+		elif doc.doctype == "Customer":
+			dataType = 30
+
+			dctCustomerGroup = get_logo_mapping_for("Customer Group", doc.customer_group, throw_exception = True, docLObjectServiceSettings = docLObjectServiceSettings)
+			if dctCustomerGroup.op_result == True:
+				doc.logo_parent_code = dctCustomerGroup.op_message
+
+			doc.logo_payment_term = ""
+			if doc.payment_terms:
+				dctPaymentTerm = get_logo_mapping_for("Payment Term Template", doc.payment_terms, throw_exception = False, docLObjectServiceSettings = docLObjectServiceSettings)
+				if dctPaymentTerm.op_result == True:
+					doc.logo_payment_term = dctPaymentTerm.op_message
+
+			if doc.customer_type == "Individual":
+				doc.personal_company = 1
+			else:
+				doc.personal_company = 0
+
+			dctBillingAddress = frappe.get_all("Address",
+				filters=[
+					["Dynamic Link", "link_doctype", "=", "Customer"],
+					["Dynamic Link", "link_name", "=", doc.name],
+					["is_primary_address", "=", 1],
+					["address_type", "=", "Billing"]
+				],
+				fields=["name"],
+				limit=1
+			)
+			if dctBillingAddress:
+				docBillingAddress = frappe.get_doc("Address", dctBillingAddress[0].name)
+			else:
+				frappe.throw(_("Customer has no Billing Address"))
+
+			soap_body = f"""
+<soapenv:Envelope
+	xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" 
+	xmlns:tem="http://tempuri.org/">
+   <soapenv:Header/>
+   <soapenv:Body>
+	  <tem:AppendDataObject>
+		 <tem:dataType>{ dataType }</tem:dataType>
+		 <tem:dataReference>0</tem:dataReference>
+		 <tem:dataXML>
+			<![CDATA[<?xml version="1.0" encoding="ISO-8859-9"?>
+<AR_APS>
+  <AR_AP DBOP="INS" >
+    <ACCOUNT_TYPE>1</ACCOUNT_TYPE>
+    <CODE>{ doc.name }</CODE>
+    <TITLE>{ doc.customer_name }</TITLE>
+    <CORRESP_LANG>1</CORRESP_LANG>
+    <NOTES>
+      <NOTE>
+        <INTERNAL_REFERENCE>0</INTERNAL_REFERENCE>
+      </NOTE>
+    </NOTES>
+    <CL_ORD_FREQ>1</CL_ORD_FREQ>
+    <INVOICE_PRNT_CNT>1</INVOICE_PRNT_CNT>
+    <PARENTCLCODE>{ doc.logo_parent_code}</PARENTCLCODE>
+	<PERSCOMPANY>{ doc.personal_company }</PERSCOMPANY>
+    <ORGLOGOID></ORGLOGOID>
+	<ADDRESS1>{ docBillingAddress.address_line1 }</ADDRESS1>
+    <ADDRESS2>{ docBillingAddress.address_line2 or '' }</ADDRESS2>
+    <DISTRICT_CODE></DISTRICT_CODE>
+    <DISTRICT></DISTRICT>
+    <TOWN_CODE></TOWN_CODE>
+    <TOWN>{ docBillingAddress.county or '' }</TOWN>
+    <CITY_CODE>İSTANBUL</CITY_CODE>
+    <CITY>{ docBillingAddress.city or '' }</CITY>
+    <COUNTRY_CODE></COUNTRY_CODE>
+    <COUNTRY>{ docBillingAddress.country or '' }</COUNTRY>
+    <TELEPHONE1></TELEPHONE1>
+    <TELEPHONE1_CODE></TELEPHONE1_CODE>
+    <TELEPHONE2></TELEPHONE2>
+    <TELEPHONE2_CODE></TELEPHONE2_CODE>
+    <TAX_ID>{ doc.tax_id or '' }</TAX_ID>
+    <TAX_OFFICE>{ doc.custom_tax_office or '' }</TAX_OFFICE>
+    <CONTACT></CONTACT>
+    <PAYMENT_CODE>{ doc.logo_payment_term }</PAYMENT_CODE>
+    <E_MAIL></E_MAIL>
+	<AUXIL_CODE>{ doc.customer_group }</AUXIL_CODE>
+	<AUXIL_CODE5>{ doc.territory }</AUXIL_CODE5>
+	<CONTACT2></CONTACT2>
+    <E_MAIL2></E_MAIL2>
+    <PURCHBRWS>1</PURCHBRWS>
+    <SALESBRWS>1</SALESBRWS>
+    <IMPBRWS>1</IMPBRWS>
+    <EXPBRWS>1</EXPBRWS>
+    <FINBRWS>1</FINBRWS>
+    <COLLATRLRISK_TYPE>1</COLLATRLRISK_TYPE>
+    <EBANKCODE>-7</EBANKCODE>
+    <RISK_TYPE1>1</RISK_TYPE1>
+    <RISK_TYPE2>1</RISK_TYPE2>
+    <RISK_TYPE3>1</RISK_TYPE3>
+    <PROFILE_ID>2</PROFILE_ID>
+    <PROFILEID_DESP>1</PROFILEID_DESP>
+    <DISP_PRINT_CNT>1</DISP_PRINT_CNT>
+    <ORD_PRINT_CNT>1</ORD_PRINT_CNT>
+  </AR_AP>
+</AR_APS>]]>
+		 </tem:dataXML>
+
+		 <tem:paramXML>
+			<![CDATA[<Parameters>
+  <ReplicMode>0</ReplicMode>
+  <CheckParams>1</CheckParams>
+  <CheckRight>1</CheckRight>
+  <ApplyCampaign>1</ApplyCampaign>
+  <ApplyCondition>1</ApplyCondition>
+  <FillAccCodes>1</FillAccCodes>
+  <FormSeriLotLines>0</FormSeriLotLines>
+  <GetStockLinePrice>0</GetStockLinePrice>
+  <ExportAllData>1</ExportAllData>
+  <Validation>0</Validation>
+  <CheckApproveDate>0</CheckApproveDate>
+  <Period>01</Period>
+</Parameters>]]>
+		 </tem:paramXML>
+		 <tem:FirmNr>1</tem:FirmNr>
+		 <tem:securityCode>5edd8e65-0292-4318-98bd-e5dccc21d2d9</tem:securityCode>
+	  </tem:AppendDataObject>
+   </soapenv:Body>
+</soapenv:Envelope>
+	"""
+		
 		headers = {
 			"Content-Type": "text/xml;charset=UTF-8",
 			"Accept-Encoding": "gzip,deflate",
