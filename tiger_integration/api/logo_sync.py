@@ -218,9 +218,22 @@ def get_logo_xml(doctype, docLObjectServiceSettings):
 
 	if dctResult.op_result == False:
 		link = frappe.utils.get_link_to_form("LOGO Object Service Settings", _("LOGO Object Service Settings"))
-		frappe.throw(_("{0} tipi {1} sayfasında eşleştirme bulunamadı!").format(_(doctype), link))
+		frappe.throw(_("{0} tipi {1} sayfasında XML şablonu bulunamadı!").format(_(doctype), link))
 
 	return dctResult
+
+@frappe.whitelist()
+def get_default_address(doc):
+	#Returns default address of a given doctype (Supplier, Customer)
+	from frappe.contacts.doctype.address.address import get_default_address
+
+	docResult = None
+	
+	address_name = get_default_address(doc.doctype, doc.name)
+	if address_name:
+		docResult = frappe.get_doc("Address", address_name)
+
+	return docResult
 
 @frappe.whitelist()
 def get_logo_mapping_for(data_type, erp_code, throw_exception = False, docLObjectServiceSettings = None):
