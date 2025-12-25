@@ -228,7 +228,7 @@ def get_default_address(doc):
 	from frappe.contacts.doctype.address.address import get_default_address
 
 	docResult = None
-	
+
 	address_name = get_default_address(doc.doctype, doc.name)
 	if address_name:
 		docResult = frappe.get_doc("Address", address_name)
