@@ -50,6 +50,10 @@ doctype_js = {
 	"Sales Order": "public/js/sales_order.js",
 	"Supplier": "public/js/supplier.js"
 	}
+doctype_list_js = {
+	"Customer" : "public/js/customer_list.js",
+	"Supplier" : "public/js/supplier_list.js"
+	}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
 # doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
