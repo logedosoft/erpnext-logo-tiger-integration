@@ -48,12 +48,16 @@ doctype_js = {
 	"Customer": "public/js/customer.js",
 	"Delivery Note": "public/js/delivery_note.js",
 	"Sales Order": "public/js/sales_order.js",
-	"Supplier": "public/js/supplier.js"
+	"Supplier": "public/js/supplier.js",
+	"Sales Invoice": "public/js/sales_invoice.js"
 	}
 doctype_list_js = {
 	"Customer" : "public/js/customer_list.js",
 	"Supplier" : "public/js/supplier_list.js",
-	"Item" : "public/js/item_list.js"
+	"Item" : "public/js/item_list.js",
+	"Delivery Note" : "public/js/delivery_note_list.js",
+	"Sales Invoice" : "public/js/sales_invoice_list.js",
+	"Sales Order" : "public/js/sales_order_list.js"
 	}
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
 # doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}

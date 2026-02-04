@@ -419,13 +419,13 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 	requester = session if session else requests
 
 	try:
+		if docLObjectServiceSettings.default_parameter_xml:
+			parameterXML = docLObjectServiceSettings.default_parameter_xml
+
 		dctXMLInfo = get_logo_xml(doctype, docLObjectServiceSettings)
 		if dctXMLInfo.op_result == True:
 			soap_body = dctXMLInfo.xml_template
-			parameterXML = dctXMLInfo.parameter_xml
-
-		if docLObjectServiceSettings.default_parameter_xml:
-			parameterXML = docLObjectServiceSettings.default_parameter_xml
+			parameterXML = dctXMLInfo.parameter_xml if dctXMLInfo.get('parameter_xml') else parameterXML
 
 		if docLObjectServiceSettings.enable_lobject_service == 0:
 			frappe.throw(_("LOGO Object Service aktif değil!"))
@@ -468,7 +468,7 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 					frappe.throw(_("{0} {1} has no Billing Address").format(doc.doctype, doc.name))
 
 				soap_body = frappe.render_template(soap_body, context={'doc': doc, 'docLObjectServiceSettings': docLObjectServiceSettings, 'docBillingAddress': docBillingAddress, 'parameterXML': parameterXML})
-			elif doctype in ["Sales Order", "Delivery Note"]:
+			elif doctype in ["Sales Order", "Delivery Note", "Sales Invoice"]:
 				from frappe.utils import formatdate, format_time
 				doc.posting_date_str = formatdate(doc.posting_date, "dd-mm-yyyy")
 				doc.posting_time_str = 0#format_time(doc.posting_time, format_string="HH:mm:ss.SSS") + "+03:00"
