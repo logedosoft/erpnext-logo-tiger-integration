@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 import html
 import pymssql
 
-from tiger_integration.logo_registry import get_data_type, get_firm_no, get_security_code
+from tiger_integration.logo_registry import get_data_type, get_firm_no, get_security_code, get_table_name
 
 def get_logo_xml(doctype, docLObjectServiceSettings):
 	#Gets info from LOGO Object Service Settings -> Mappings table
@@ -410,9 +410,7 @@ def item_exists_in_logo(item_code):
 	if not docSQLSettings.enable_logo_sql_connection:
 		return False
 
-	docLObjectServiceSettings = frappe.get_doc("LOGO Object Service Settings")
-	firm_no = cint(docLObjectServiceSettings.logo_company_no)
-	table_name = f"LG_{firm_no:03d}_ITEMS"
+	table_name = get_table_name("Item")
 
 	try:
 		conn = pymssql.connect(
