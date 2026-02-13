@@ -408,6 +408,10 @@ def item_exists_in_logo(item_code):
 	if not docSQLSettings.enable_logo_sql_connection:
 		return False
 
+	docLObjectServiceSettings = frappe.get_doc("LOGO Object Service Settings")
+	firm_no = cint(docLObjectServiceSettings.logo_company_no)
+	table_name = f"LG_{firm_no:03d}_ITEMS"
+
 	try:
 		conn = pymssql.connect(
 			server=docSQLSettings.sql_server_address,
@@ -418,7 +422,7 @@ def item_exists_in_logo(item_code):
 			timeout=5,
 		)
 		cursor = conn.cursor()
-		cursor.execute("SELECT TOP 1 LOGICALREF FROM LG_001_ITEMS WHERE CODE = %s AND ACTIVE = 0", (item_code,))
+		cursor.execute(f"SELECT TOP 1 LOGICALREF FROM {table_name} WHERE CODE = %s AND ACTIVE = 0", (item_code,))
 		row = cursor.fetchone()
 		conn.close()
 		return row is not None
