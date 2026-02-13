@@ -10,6 +10,7 @@ from frappe.utils import cint, flt
 import requests
 from bs4 import BeautifulSoup
 import html
+import pymssql
 
 def get_logo_xml(doctype, docLObjectServiceSettings):
 	#Gets info from LOGO Object Service Settings -> Mappings table
@@ -401,6 +402,34 @@ def process_logo_export(names, doctype, update_logo, user):
 		"errors": dctResult.error_message
 	}, user=user)
 
+def item_exists_in_logo(item_code):
+	"""Check if an item already exists in Logo Tiger ERP database by querying the ITEMS table."""
+	docSQLSettings = frappe.get_doc("LOGO SQL Settings")
+	if not docSQLSettings.enable_logo_sql_connection:
+		return False
+
+	docLObjectServiceSettings = frappe.get_doc("LOGO Object Service Settings")
+	firm_no = cint(docLObjectServiceSettings.logo_company_no)
+	table_name = f"LG_{firm_no:03d}_ITEMS"
+
+	try:
+		conn = pymssql.connect(
+			server=docSQLSettings.sql_server_address,
+			user=docSQLSettings.sql_user_name,
+			password=docSQLSettings.get_password("sql_user_password"),
+			database=docSQLSettings.sql_database_name,
+			login_timeout=5,
+			timeout=5,
+		)
+		cursor = conn.cursor()
+		cursor.execute(f"SELECT TOP 1 LOGICALREF FROM {table_name} WHERE CODE = %s AND ACTIVE = 0", (item_code,))
+		row = cursor.fetchone()
+		conn.close()
+		return row is not None
+	except Exception as e:
+		frappe.log_error("Logo SQL Check Error", f"item_exists_in_logo({item_code}): {e}")
+		return False
+
 @frappe.whitelist(allow_guest=False)
 def export_to_logo(doctype, docname, update_logo = False, session=None, settings=None):
 	dctResult = frappe._dict({
@@ -429,6 +458,12 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 
 		if docLObjectServiceSettings.enable_lobject_service == 0:
 			frappe.throw(_("LOGO Object Service aktif değil!"))
+
+		# Check if item already exists in Logo before exporting
+		if doctype == "Item" and item_exists_in_logo(docname):
+			dctResult.op_result = True
+			dctResult.op_message = _("Item already exists in Logo, skipped.")
+			return dctResult
 
 		dctValidationResult = validate_export_to_logo(doctype, docname, docLObjectServiceSettings)
 		if dctValidationResult.op_result == False:
