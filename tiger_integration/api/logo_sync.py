@@ -520,6 +520,10 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 						dctResult.op_result = True
 						dctResult.op_message = data_reference
 						doc.add_comment("Comment", text=_("LOGO Export reference no {0}").format(dctResult.data_reference), comment_email=frappe.session.user, comment_by=frappe.session.user)
+						
+						# Set LOGO reference number if DocType has the field
+						if frappe.get_meta(doc.doctype).has_field("custom_ld_logo_ref_no"):
+							frappe.db.set_value(doc.doctype, doc.name, "custom_ld_logo_ref_no", dctResult.data_reference, update_modified=False)
 
 	except Exception as e:
 		dctResult.op_result = False
