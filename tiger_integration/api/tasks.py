@@ -9,7 +9,7 @@ import time
 from tiger_integration.api.logo_sync import download_einvoice_pdf
 
 
-def download_pending_einvoice_pdfs():
+def download_einvoice_pdfs():
     """
     Scheduled task to download e-invoice PDFs for submitted Sales Invoices.
     Runs hourly via scheduler_events.

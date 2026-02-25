@@ -139,9 +139,19 @@ def get_logo_db_settings():
     
     Returns:
         frappe._dict: Settings dict with server, user, password, database
+    
+    Raises:
+        frappe.exceptions.ValidationError: If LOGO SQL connection is not enabled
     """
     docSettings = frappe.get_doc("LOGO SQL Settings")
     docSettings.check_permission("read")
+    
+    # Check if LOGO SQL connection is enabled
+    if not docSettings.get("enable_logo_sql_connection"):
+        frappe.throw(
+            _("LOGO SQL Connection is not enabled. Please enable it in LOGO SQL Settings."),
+            frappe.ValidationError
+        )
     
     return frappe._dict({
         "server": docSettings.sql_server_address,
