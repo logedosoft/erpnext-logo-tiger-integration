@@ -171,23 +171,11 @@ jinja = {
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"tiger_integration.tasks.all"
-# 	],
-# 	"daily": [
-# 		"tiger_integration.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"tiger_integration.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"tiger_integration.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"tiger_integration.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"hourly": [
+		"tiger_integration.api.tasks.download_pending_einvoice_pdfs"
+	]
+}
 
 # Testing
 # -------
