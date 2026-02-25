@@ -15,11 +15,19 @@ def download_einvoice_pdfs():
     Runs hourly via scheduler_events.
     
     Process:
-    1. Find submitted Sales Invoices with LOGO reference but no ELOGO_INVOICE attachment
-    2. Process in batches (max 20 per run)
-    3. Use frappe.enqueue for each invoice to ensure non-blocking execution
-    4. Include rate limiting between API calls
+    1. Check if enable_elogo_pdf_attachments_for_invoices is enabled in LOGO Object Service Settings
+    2. Find submitted Sales Invoices with LOGO reference but no ELOGO_INVOICE attachment
+    3. Process in batches (max 20 per run)
+    4. Use frappe.enqueue for each invoice to ensure non-blocking execution
+    5. Include rate limiting between API calls
     """
+    # Check if the feature is enabled in LOGO Object Service Settings
+    if not frappe.db.get_single_value(
+        "LOGO Object Service Settings", 
+        "enable_elogo_pdf_attachments_for_invoices"
+    ):
+        # Feature is disabled, stop execution
+        return
     # Get eligible invoices
     invoices = frappe.db.sql("""
         SELECT si.name
