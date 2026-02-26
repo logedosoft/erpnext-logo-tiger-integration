@@ -22,46 +22,37 @@ def download_einvoice_pdfs():
     5. Include rate limiting between API calls
     """
     # Check if the feature is enabled in LOGO Object Service Settings
-    if not frappe.db.get_single_value(
+    if frappe.db.get_single_value(
         "LOGO Object Service Settings", 
         "enable_elogo_pdf_attachments_for_invoices"
     ):
-        # Feature is disabled, stop execution
-        return
-    # Get eligible invoices
-    invoices = frappe.db.sql("""
-        SELECT si.name
-        FROM `tabSales Invoice` si
-        WHERE si.docstatus = 1
-        AND si.custom_ld_logo_ref_no IS NOT NULL
-        AND si.custom_ld_logo_ref_no != ''
-        AND NOT EXISTS (
-            SELECT 1 FROM `tabFile` f
-            WHERE f.attached_to_doctype = 'Sales Invoice'
-            AND f.attached_to_name = si.name
-            AND f.file_name LIKE '%ELOGO_INVOICE%'
-        )
-        ORDER BY si.creation DESC
-        LIMIT 20
-    """, as_dict=True)
-    
-    if not invoices:
-        return
-    
-    for invoice in invoices:
-        # Enqueue each invoice processing as separate job
-        frappe.enqueue(
-            process_single_einvoice_download,
-            queue="long",
-            timeout=300,
-            invoice_name=invoice.name,
-            is_async=True,
-            enqueue_after_commit=True
-        )
+        # Get eligible invoices
+        invoices = frappe.db.sql("""
+            SELECT si.name
+            FROM `tabSales Invoice` si
+            WHERE si.docstatus = 1
+            AND si.custom_ld_logo_ref_no IS NOT NULL
+            AND si.custom_ld_logo_ref_no != ''
+            AND NOT EXISTS (
+                SELECT 1 FROM `tabFile` f
+                WHERE f.attached_to_doctype = 'Sales Invoice'
+                AND f.attached_to_name = si.name
+                AND f.file_name LIKE '%ELOGO_INVOICE%'
+            )
+            ORDER BY si.creation DESC
+            LIMIT 20
+        """, as_dict=True)
         
-        # Small delay to prevent queue flooding
-        time.sleep(0.5)
-
+        for invoice in invoices:
+            # Enqueue each invoice processing as separate job
+            frappe.enqueue(
+                process_single_einvoice_download,
+                queue="long",
+                timeout=300,
+                invoice_name=invoice.name,
+                is_async=True,
+                enqueue_after_commit=True
+            )
 
 def process_single_einvoice_download(invoice_name):
     """
@@ -76,17 +67,17 @@ def process_single_einvoice_download(invoice_name):
         
         if result.get("op_result"):
             frappe.log_error(
-                f"Successfully downloaded e-invoice PDF for {invoice_name}",
-                "eInvoice PDF Download Success"
+                "eInvoice PDF Download",
+                f"Successfully downloaded e-invoice PDF for {invoice_name}"
             )
         else:
             frappe.log_error(
-                f"Failed to download e-invoice PDF for {invoice_name}: {result.get('op_message')}",
-                "eInvoice PDF Download Failed"
+                "eInvoice PDF Download",
+                f"Failed to download e-invoice PDF for {invoice_name}: {result.get('op_message')}"
             )
             
     except Exception as e:
         frappe.log_error(
-            frappe.get_traceback(),
-            f"eInvoice PDF Download Error - {invoice_name}"
+            "eInvoice PDF Download Error",
+            frappe.get_traceback()
         )

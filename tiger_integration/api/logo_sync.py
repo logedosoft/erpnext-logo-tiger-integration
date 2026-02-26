@@ -739,7 +739,7 @@ def download_einvoice_pdf(sales_invoice_name):
 										except Exception as e:
 											add_step("Step 8: Attach PDF", "error", f"Attachment error: {str(e)}")
 											dctResult.op_message = f"Failed to attach PDF: {str(e)}"
-											frappe.log_error(frappe.get_traceback(), "PDF Attachment Error")
+											frappe.log_error("PDF Attachment Error", frappe.get_traceback())
 									else:
 										add_step("Step 7: Extract PDF", "error", pdf_result.op_message)
 										dctResult.op_message = f"PDF extraction failed: {pdf_result.op_message}"
@@ -765,6 +765,8 @@ def download_einvoice_pdf(sales_invoice_name):
 	except Exception as e:
 		dctResult.op_message = f"Unexpected error: {str(e)}"
 		add_step("Error", "error", str(e))
-		frappe.log_error(frappe.get_traceback(), f"eInvoice PDF Download Error - {sales_invoice_name}")
+		frappe.log_error(
+			"eInvoice PDF Download Error",
+			f"Failed to download e-invoice PDF for {sales_invoice_name}: {frappe.get_traceback()}")
 	
 	return dctResult
