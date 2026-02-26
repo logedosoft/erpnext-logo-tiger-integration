@@ -719,10 +719,14 @@ def download_einvoice_pdf(sales_invoice_name):
 											
 											# Add comment to Sales Invoice with step-by-step results
 											comment_text = "e-Invoice PDF Download Process Results:\n"
+
+											# Success!
+											dctResult.op_result = True
+											dctResult.op_message = f"Successfully downloaded and attached e-invoice PDF: {pdf_filename}"
 											
 											for step in dctResult.steps:
 												status_icon = "✅" if step.get("status") == "success" else ("❌" if step.get("status") == "error" else "ℹ️")
-												comment_text += f"\n{status_icon} {step.get('step', '')}: {step.get('message', '')}"
+												comment_text += f"<br>{status_icon} {step.get('step', '')}: {step.get('message', '')}"
 											
 											comment_text += f"\n\nFinal Result: {'SUCCESS' if dctResult.op_result else 'FAILED'}\n"
 											comment_text += f"Message: {dctResult.op_message}"
@@ -731,10 +735,6 @@ def download_einvoice_pdf(sales_invoice_name):
 												text=comment_text,
 												comment_email=frappe.session.user,
 												comment_by=frappe.session.user)
-											
-											# Success!
-											dctResult.op_result = True
-											dctResult.op_message = f"Successfully downloaded and attached e-invoice PDF: {pdf_filename}"
 										
 										except Exception as e:
 											add_step("Step 8: Attach PDF", "error", f"Attachment error: {str(e)}")

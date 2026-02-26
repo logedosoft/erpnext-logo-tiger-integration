@@ -65,14 +65,10 @@ def process_single_einvoice_download(invoice_name):
     try:
         result = download_einvoice_pdf(invoice_name)
         
-        if result.get("op_result"):
+        # Only log failures - success is already commented on the invoice
+        if not result.get("op_result"):
             frappe.log_error(
-                "eInvoice PDF Download",
-                f"Successfully downloaded e-invoice PDF for {invoice_name}"
-            )
-        else:
-            frappe.log_error(
-                "eInvoice PDF Download",
+                "eInvoice PDF Download Failed",
                 f"Failed to download e-invoice PDF for {invoice_name}: {result.get('op_message')}"
             )
             
