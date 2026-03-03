@@ -57,6 +57,7 @@ def get_logo_xml(doctype, docLObjectServiceSettings):
 		 <tem:dataReference>0</tem:dataReference>
 		 <tem:dataXML>
 			<![CDATA[<ITEMS>
+  {% set dctUnitSet = get_logo_mapping_for("UOM", doc.stock_uom, throw_exception = True) %}
   <ITEM DBOP="INS">
 	<CARD_TYPE>1</CARD_TYPE>
 	<CODE>{{ doc.name }}</CODE>
@@ -71,18 +72,21 @@ def get_logo_xml(doctype, docLObjectServiceSettings):
 	<VAT>{{ doc.logo_tax_rate }}</VAT>
 	<AUTOINCSL>1</AUTOINCSL>
 	<LOTS_DIVISIBLE>1</LOTS_DIVISIBLE>
-	<UNITSET_CODE>{{ doc.logo_unitset_code }}</UNITSET_CODE>
+	<UNITSET_CODE>{{ dctUnitSet.logo_code }}</UNITSET_CODE>
 	<DIST_LOT_UNITS>1</DIST_LOT_UNITS>
 	<COMB_LOT_UNITS>1</COMB_LOT_UNITS>
 	<UNITS>
+	  {% set logo_units = get_logo_units_for_unit_set(dctUnitSet.logo_code) %}
+	  {% for unit in logo_units %}
 	  <UNIT>
-		<UNIT_CODE>{{ doc.logo_unit_code }}</UNIT_CODE>
+		<UNIT_CODE>{{ unit.CODE }}</UNIT_CODE>
 		<USEF_MTRLCLASS>1</USEF_MTRLCLASS>
 		<USEF_PURCHCLAS>1</USEF_PURCHCLAS>
 		<USEF_SALESCLAS>1</USEF_SALESCLAS>
-		<CONV_FACT1>1</CONV_FACT1>
-		<CONV_FACT2>1</CONV_FACT2>
+		<CONV_FACT1>{{ unit.CONVFACT1 }}</CONV_FACT1>
+		<CONV_FACT2>{{ unit.CONVFACT2 }}</CONV_FACT2>
 	  </UNIT>
+	  {% endfor %}
 	</UNITS>
 	<MULTI_ADD_TAX>0</MULTI_ADD_TAX>
 	<PACKET>0</PACKET>
@@ -280,6 +284,56 @@ def get_item_tax_rate(strItemCode, docLObjectServiceSettings = None):
 				flResult = docItemTaxTemplate.taxes[0].tax_rate
 
 	return flResult
+
+@frappe.whitelist()
+def get_logo_units_for_unit_set(unit_set_code, docLObjectServiceSettings=None):
+	"""
+	Fetch all UOMs for a given UNITSET_CODE from LOGO database.
+	
+	Args:
+	    unit_set_code (str): The UNITSET code (e.g., "05")
+	    docLObjectServiceSettings: LOGO Object Service Settings DocType
+	
+	Returns:
+	    list: List of dicts with CODE, CONVFACT1, CONVFACT2
+	"""
+	if not unit_set_code:
+		return []
+	
+	if not docLObjectServiceSettings:
+		docLObjectServiceSettings = frappe.get_doc("LOGO Object Service Settings")
+	
+	try:
+		from tiger_integration.api.logo_db import execute_query
+		
+		company = docLObjectServiceSettings.logo_company_no
+		
+		query = """
+			SELECT UNITSETL.CODE, UNITSETL.CONVFACT1, UNITSETL.CONVFACT2
+			FROM {UNITSETL} AS UNITSETL
+			  INNER JOIN {UNITSETF} AS UNITSETF 
+			    ON UNITSETL.UNITSETREF = UNITSETF.LOGICALREF
+			WHERE UNITSETF.CODE = %(unit_set_code)s
+			ORDER BY UNITSETL.LINENR
+		"""
+		
+		result = execute_query(query, company=company, params={"unit_set_code": unit_set_code})
+		
+		if result.op_result and result.data:
+			return result.data
+		else:
+			frappe.log_error(
+				title="Tiger Integration: get_logo_units_for_unit_set failed",
+				message=result.op_message or "No data returned from LOGO database"
+			)
+			return []
+		
+	except Exception as e:
+		frappe.log_error(
+			title="Tiger Integration: get_logo_units_for_unit_set error",
+			message=frappe.get_traceback()
+		)
+		return []
 
 def validate_export_to_logo(doctype, docname, docLObjectServiceSettings):
 	dctResult = frappe._dict({

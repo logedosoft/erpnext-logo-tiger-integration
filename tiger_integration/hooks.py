@@ -93,7 +93,8 @@ jinja = {
     "methods": [
         "tiger_integration.api.logo_sync.get_item_tax_rate",
 		"tiger_integration.api.logo_sync.get_logo_mapping_for",
-		"tiger_integration.api.logo_sync.get_default_address"
+		"tiger_integration.api.logo_sync.get_default_address",
+		"tiger_integration.api.logo_sync.get_logo_units_for_unit_set"
     ]
 }
 
