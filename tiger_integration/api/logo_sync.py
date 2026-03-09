@@ -395,6 +395,27 @@ def validate_export_to_logo(doctype, docname, docLObjectServiceSettings):
 			dctResult.op_result = False
 			dctResult.op_message = _("Fatura adresi tanımlı olmalıdır!")
 
+	elif doctype in ["Delivery Note", "Sales Invoice"]:
+		# Check each item exists and is active in LOGO (ACTIVE=0 means active)
+		# before exporting to prevent partial records in LOGO Tiger.
+		from tiger_integration.api.logo_db import execute_query
+		company = docLObjectServiceSettings.logo_company_no
+		invalid_items = []
+
+		for item in doc.items:
+			result = execute_query(
+				"SELECT ACTIVE FROM {ITEMS} WHERE CODE = %(code)s",
+				company=company,
+				params={"code": item.item_code}
+			)
+			if not result.op_result or not result.data or result.data[0].get("ACTIVE") != 0:
+				if item.item_code not in invalid_items:
+					invalid_items.append(item.item_code)
+
+		if invalid_items:
+			dctResult.op_result = False
+			dctResult.op_message = _("Aşağıdaki ürünler LOGO'da bulunamadı veya aktif değil: {0}. Lütfen önce bu ürünleri LOGO'ya aktarın.").format(", ".join(invalid_items))
+
 	return dctResult
 
 @frappe.whitelist(allow_guest=False)
