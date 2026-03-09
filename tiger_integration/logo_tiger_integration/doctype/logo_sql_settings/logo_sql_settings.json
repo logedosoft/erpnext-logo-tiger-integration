@@ -12,6 +12,7 @@
   "sql_user_name",
   "sql_user_password",
   "sql_database_name",
+  "sql_server_charset",
   "btn_test_connection"
  ],
  "fields": [
@@ -59,13 +60,19 @@
    "fieldname": "enable_logging_for_queries",
    "fieldtype": "Check",
    "label": "Enable Logging"
+  },
+  {
+   "default": "cp1254",
+   "fieldname": "sql_server_charset",
+   "fieldtype": "Data",
+   "label": "SQL Server Charset"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-03-04 12:36:15.944820",
+ "modified": "2026-03-09 15:57:14.394157",
  "modified_by": "Administrator",
  "module": "LOGO Tiger Integration",
  "name": "LOGO SQL Settings",

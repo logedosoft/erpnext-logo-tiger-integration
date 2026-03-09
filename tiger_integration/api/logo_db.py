@@ -5,833 +5,361 @@
 """
 LOGO Database Query Module
 
-This module provides a clean interface for querying LOGO SQL Server database.
-It handles connection management, query execution, and returns results in a
-consistent format.
+Provides a thin interface for running parameterised SQL queries against a
+LOGO ERP SQL Server instance.
 
-Table Name Patterns:
-    LOGO uses different table name patterns:
-    
-    1. Period-specific tables (company + period):
-       Pattern: LG_{COMPANY}_{PERIOD}_{TABLENAME}
-       Example: LG_001_01_INVOICE, LG_001_01_STLINE
-       
-    2. Company-specific tables (company only, no period):
-       Pattern: LG_{COMPANY}_{TABLENAME}
-       Example: LG_001_CLCARD, LG_001_ITEMS
-       
-    3. General tables (no company or period):
-       Pattern: L_{TABLENAME}
-       Example: L_CAPIFIRM, L_CAPIPERIOD
+Public surface
+--------------
+get_logo_db_settings()
+    Return connection settings from the LOGO SQL Settings DocType.
 
-Placeholder Usage:
-    You can use placeholders in your queries:
-    - {INVOICE} -> LG_{COMPANY}_{PERIOD}_INVOICE (period-specific)
-    - {CLCARD} -> LG_{COMPANY}_CLCARD (company-specific)
-    - {CAPIFIRM} -> L_CAPIFIRM (general)
-    
-    The module automatically replaces placeholders based on LOGO_TABLE_MAP patterns.
+build_table_name(table_key, company, period)
+    Resolve a table key to a fully-qualified LOGO table name.
 
-Example usage:
+replace_table_placeholders(query, company, period)
+    Replace all ``{TABLE_KEY}`` placeholders in a query string.
 
-    # Period-specific table query
-    query = "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(ref)s"
-    result = execute_query(query, company="001", period="01", params={"ref": 123})
-    
-    # Company-specific table query
-    query = "SELECT DEFINITION_ FROM {CLCARD} WHERE LOGICALREF = %(ref)s"
-    result = execute_query(query, company="001", params={"ref": 123})
-    
-    # General table query
-    query = "SELECT * FROM {CAPIFIRM} WHERE NR = %(nr)s"
-    result = execute_query(query, params={"nr": 1})
+get_logo_connection()
+    Context-manager that yields an open pymssql connection.
 
-Connection Reuse (Performance Optimization):
-    For multiple queries in sequence, use the context manager to avoid
-    connection overhead:
-    
-    # Using context manager for multiple queries
-    with get_logo_connection() as conn:
-        result1 = execute_query_with_conn(conn, "SELECT ...", company="001")
-        result2 = execute_query_with_conn(conn, "SELECT ...", company="001")
-        # Connection stays open for both queries
-    
-    # Using batch query function
-    queries = [
-        ("SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(ref)s", {"ref": 123}),
-        ("SELECT DEFINITION_ FROM {CLCARD} WHERE LOGICALREF = %(ref)s", {"ref": 456}),
-    ]
-    results = execute_queries(queries, company="001", period="01")
+execute_query(query, company, period, params, as_dict, conn)
+    Run a single query.  If *conn* is provided the caller owns the connection
+    and it will NOT be closed here — use this for connection reuse across
+    multiple queries.  If *conn* is None a new connection is opened and closed
+    automatically.
+
+test_connection()
+    Verify that the configured LOGO SQL Server is reachable.
 """
 
 import json
+import re
+from contextlib import contextmanager
 
 import frappe
 import pymssql
-from contextlib import contextmanager
 from frappe import _
 
 
-# LOGO Table Map: Maps placeholder names to (table_name, table_pattern)
-# table_pattern contains placeholders:
-#   - {COMPANY}: Will be replaced with normalized company number (3-digit)
-#   - {PERIOD}: Will be replaced with normalized period number (2-digit)
-#   - If no placeholders, the pattern is used as-is
+# ---------------------------------------------------------------------------
+# Table name map
+# ---------------------------------------------------------------------------
+
 LOGO_TABLE_MAP = {
-    # Period-specific tables (transaction data that varies by period)
-    # Pattern: LG_{COMPANY}_{PERIOD}_{TABLE}
-    "INVOICE": ("INVOICE", "LG_{COMPANY}_{PERIOD}_INVOICE"),
-    "STLINE": ("STLINE", "LG_{COMPANY}_{PERIOD}_STLINE"),
-    "STFICHE": ("STFICHE", "LG_{COMPANY}_{PERIOD}_STFICHE"),
-    "PAYTRANS": ("PAYTRANS", "LG_{COMPANY}_{PERIOD}_PAYTRANS"),
-    "PAYPLANS": ("PAYPLANS", "LG_{COMPANY}_{PERIOD}_PAYPLANS"),
-    "KSLINES": ("KSLINES", "LG_{COMPANY}_{PERIOD}_KSLINES"),
-    "KSCURR": ("KSCURR", "LG_{COMPANY}_{PERIOD}_KSCURR"),
-    "BANKLINES": ("BANKLINES", "LG_{COMPANY}_{PERIOD}_BANKLINES"),
-    "EMUHTOTAL": ("EMUHTOTAL", "LG_{COMPANY}_{PERIOD}_EMUHTOTAL"),
-    "EMFLINE": ("EMFLINE", "LG_{COMPANY}_{PERIOD}_EMFLINE"),
-    "EMFICHE": ("EMFICHE", "LG_{COMPANY}_{PERIOD}_EMFICHE"),
-    "CSHTRANS": ("CSHTRANS", "LG_{COMPANY}_{PERIOD}_CSHTRANS"),
-    "ACCOUNTRP": ("ACCOUNTRP", "LG_{COMPANY}_{PERIOD}_ACCOUNTRP"),
-    "PROJECTTOT": ("PROJECTTOT", "LG_{COMPANY}_{PERIOD}_PROJECTTOT"),
-    "ITEMUNIT": ("ITEMUNIT", "LG_{COMPANY}_{PERIOD}_ITEMUNIT"),
-    "PRCLIST": ("PRCLIST", "LG_{COMPANY}_{PERIOD}_PRCLIST"),
-    "PRCPLAN": ("PRCPLAN", "LG_{COMPANY}_{PERIOD}_PRCPLAN"),
-    "DISCLIST": ("DISCLIST", "LG_{COMPANY}_{PERIOD}_DISCLIST"),
-    "DISCPLAN": ("DISCPLAN", "LG_{COMPANY}_{PERIOD}_DISCPLAN"),
-    "CAMPALINE": ("CAMPALINE", "LG_{COMPANY}_{PERIOD}_CAMPALINE"),
-    "ITMCHARVAL": ("ITMCHARVAL", "LG_{COMPANY}_{PERIOD}_ITMCHARVAL"),
-    "ITMWSDEF": ("ITMWSDEF", "LG_{COMPANY}_{PERIOD}_ITMWSDEF"),
-    "ITMWSTOT": ("ITMWSTOT", "LG_{COMPANY}_{PERIOD}_ITMWSTOT"),
-    
-    # Company-specific tables (master data, no period)
-    # Pattern: LG_{COMPANY}_{TABLE}
-    "ITEMS": ("ITEMS", "LG_{COMPANY}_ITEMS"),
-    "CLCARD": ("CLCARD", "LG_{COMPANY}_CLCARD"),
-    "BANKACC": ("BANKACC", "LG_{COMPANY}_BANKACC"),
-    "ACCOUNTS": ("ACCOUNTS", "LG_{COMPANY}_ACCOUNTS"),
-    "PROJECT": ("PROJECT", "LG_{COMPANY}_PROJECT"),
-    "UNITSETL": ("UNITSETL", "LG_{COMPANY}_UNITSETL"),
-    "UNITSETF": ("UNITSETF", "LG_{COMPANY}_UNITSETF"),
-    "CAMPAIN": ("CAMPAIN", "LG_{COMPANY}_CAMPAIN"),
-    "CHARVAL": ("CHARVAL", "LG_{COMPANY}_CHARVAL"),
-    "CHARIS": ("CHARIS", "LG_{COMPANY}_CHARIS"),
-    "ITMCLASSA": ("ITMCLASSA", "LG_{COMPANY}_ITMCLASSA"),
-    "ITMCLASSB": ("ITMCLASSB", "LG_{COMPANY}_ITMCLASSB"),
-    "ITMUNITA": ("ITMUNITA", "LG_{COMPANY}_ITMUNITA"),
-    "ITMUNITB": ("ITMUNITB", "LG_{COMPANY}_ITMUNITB"),
-    "ITMWSCARD": ("ITMWSCARD", "LG_{COMPANY}_ITMWSCARD"),
-    "SPECODES": ("SPECODES", "LG_{COMPANY}_SPECODES"),
-    "LGMAIN": ("LGMAIN", "LG_{COMPANY}_LGMAIN"),
-    "LOGREP": ("LOGREP", "LG_{COMPANY}_LOGREP"),
-    
-    # General tables (system-wide, no company or period)
-    # Pattern: L_{TABLE}
-    "CAPIFIRM": ("CAPIFIRM", "L_CAPIFIRM"),
-    "CAPIPERIOD": ("CAPIPERIOD", "L_CAPIPERIOD"),
-    "CITY": ("CITY", "L_CITY"),
-    "COUNTRY": ("COUNTRY", "L_COUNTRY"),
-    "POSTCODE": ("POSTCODE", "L_POSTCODE"),
+	"INVOICE": ("INVOICE", "LG_{COMPANY}_{PERIOD}_INVOICE"),
+	"STLINE": ("STLINE", "LG_{COMPANY}_{PERIOD}_STLINE"),
+	"STFICHE": ("STFICHE", "LG_{COMPANY}_{PERIOD}_STFICHE"),
+	"PAYTRANS": ("PAYTRANS", "LG_{COMPANY}_{PERIOD}_PAYTRANS"),
+	"PAYPLANS": ("PAYPLANS", "LG_{COMPANY}_{PERIOD}_PAYPLANS"),
+	"KSLINES": ("KSLINES", "LG_{COMPANY}_{PERIOD}_KSLINES"),
+	"KSCURR": ("KSCURR", "LG_{COMPANY}_{PERIOD}_KSCURR"),
+	"BANKLINES": ("BANKLINES", "LG_{COMPANY}_{PERIOD}_BANKLINES"),
+	"EMUHTOTAL": ("EMUHTOTAL", "LG_{COMPANY}_{PERIOD}_EMUHTOTAL"),
+	"EMFLINE": ("EMFLINE", "LG_{COMPANY}_{PERIOD}_EMFLINE"),
+	"EMFICHE": ("EMFICHE", "LG_{COMPANY}_{PERIOD}_EMFICHE"),
+	"CSHTRANS": ("CSHTRANS", "LG_{COMPANY}_{PERIOD}_CSHTRANS"),
+	"ACCOUNTRP": ("ACCOUNTRP", "LG_{COMPANY}_{PERIOD}_ACCOUNTRP"),
+	"PROJECTTOT": ("PROJECTTOT", "LG_{COMPANY}_{PERIOD}_PROJECTTOT"),
+	"ITEMUNIT": ("ITEMUNIT", "LG_{COMPANY}_{PERIOD}_ITEMUNIT"),
+	"PRCLIST": ("PRCLIST", "LG_{COMPANY}_{PERIOD}_PRCLIST"),
+	"PRCPLAN": ("PRCPLAN", "LG_{COMPANY}_{PERIOD}_PRCPLAN"),
+	"DISCLIST": ("DISCLIST", "LG_{COMPANY}_{PERIOD}_DISCLIST"),
+	"DISCPLAN": ("DISCPLAN", "LG_{COMPANY}_{PERIOD}_DISCPLAN"),
+	"CAMPALINE": ("CAMPALINE", "LG_{COMPANY}_{PERIOD}_CAMPALINE"),
+	"ITMCHARVAL": ("ITMCHARVAL", "LG_{COMPANY}_{PERIOD}_ITMCHARVAL"),
+	"ITMWSDEF": ("ITMWSDEF", "LG_{COMPANY}_{PERIOD}_ITMWSDEF"),
+	"ITMWSTOT": ("ITMWSTOT", "LG_{COMPANY}_{PERIOD}_ITMWSTOT"),
+	"ITEMS": ("ITEMS", "LG_{COMPANY}_ITEMS"),
+	"CLCARD": ("CLCARD", "LG_{COMPANY}_CLCARD"),
+	"BANKACC": ("BANKACC", "LG_{COMPANY}_BANKACC"),
+	"ACCOUNTS": ("ACCOUNTS", "LG_{COMPANY}_ACCOUNTS"),
+	"PROJECT": ("PROJECT", "LG_{COMPANY}_PROJECT"),
+	"UNITSETL": ("UNITSETL", "LG_{COMPANY}_UNITSETL"),
+	"UNITSETF": ("UNITSETF", "LG_{COMPANY}_UNITSETF"),
+	"CAMPAIN": ("CAMPAIN", "LG_{COMPANY}_CAMPAIN"),
+	"CHARVAL": ("CHARVAL", "LG_{COMPANY}_CHARVAL"),
+	"CHARIS": ("CHARIS", "LG_{COMPANY}_CHARIS"),
+	"ITMCLASSA": ("ITMCLASSA", "LG_{COMPANY}_ITMCLASSA"),
+	"ITMCLASSB": ("ITMCLASSB", "LG_{COMPANY}_ITMCLASSB"),
+	"ITMUNITA": ("ITMUNITA", "LG_{COMPANY}_ITMUNITA"),
+	"ITMUNITB": ("ITMUNITB", "LG_{COMPANY}_ITMUNITB"),
+	"ITMWSCARD": ("ITMWSCARD", "LG_{COMPANY}_ITMWSCARD"),
+	"SPECODES": ("SPECODES", "LG_{COMPANY}_SPECODES"),
+	"LGMAIN": ("LGMAIN", "LG_{COMPANY}_LGMAIN"),
+	"LOGREP": ("LOGREP", "LG_{COMPANY}_LOGREP"),
+	"CAPIFIRM": ("CAPIFIRM", "L_CAPIFIRM"),
+	"CAPIPERIOD": ("CAPIPERIOD", "L_CAPIPERIOD"),
+	"CITY": ("CITY", "L_CITY"),
+	"COUNTRY": ("COUNTRY", "L_COUNTRY"),
+	"POSTCODE": ("POSTCODE", "L_POSTCODE"),
 }
 
 
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+
 def get_logo_db_settings():
-    """
-    Get LOGO SQL Settings from DocType.
-    
-    Returns:
-        frappe._dict: Settings dict with server, user, password, database
-    
-    Raises:
-        frappe.exceptions.ValidationError: If LOGO SQL connection is not enabled
-    """
-    docSettings = frappe.get_doc("LOGO SQL Settings")
-    docSettings.check_permission("read")
-    
-    # Check if LOGO SQL connection is enabled
-    if not docSettings.get("enable_logo_sql_connection"):
-        frappe.throw(
-            _("LOGO SQL Connection is not enabled. Please enable it in LOGO SQL Settings."),
-            frappe.ValidationError
-        )
-    
-    return frappe._dict({
-        "server": docSettings.sql_server_address,
-        "user": docSettings.sql_user_name,
-        "password": docSettings.get_password("sql_user_password") if docSettings.sql_user_password else "",
-        "database": docSettings.sql_database_name,
-        "login_timeout": 10,
-        "timeout": 30,
-        "enable_logging_for_queries": docSettings.get("enable_logging_for_queries", 0)
-    })
+	doc = frappe.get_doc("LOGO SQL Settings")
+	doc.check_permission("read")
+
+	if not doc.get("enable_logo_sql_connection"):
+		frappe.throw(
+			_("LOGO SQL Connection is not enabled. Please enable it in LOGO SQL Settings."),
+			frappe.ValidationError
+		)
+
+	return frappe._dict({
+		"server": doc.sql_server_address,
+		"user": doc.sql_user_name,
+		"password": doc.get_password("sql_user_password") if doc.sql_user_password else "",
+		"database": doc.sql_database_name,
+		"login_timeout": 10,
+		"timeout": 30,
+		"charset": doc.get("sql_server_charset", "cp1254"),
+		"enable_logging_for_queries": doc.get("enable_logging_for_queries", 0),
+	})
 
 
-def _log_logo_query(original_query, generated_query, params, result_data, row_count, columns, error_message=None):
-    """
-    Log query execution details to Error Log DocType.
-    
-    Args:
-        original_query (str): Original query with placeholders like {INVOICE}
-        generated_query (str): Query with actual table names
-        params (dict): Parameters used in the query
-        result_data (list): Result data returned from query
-        row_count (int): Number of rows returned
-        columns (list): Column names
-        error_message (str, optional): Error message if query failed
-    """
-    # Build log message
-    log_data = {
-        "Original Query": original_query,
-        "Generated Query": generated_query,
-        "Parameters": json.dumps(params) if params else "None",
-        "Columns": ", ".join(columns) if columns else "None",
-        "Row Count": row_count,
-        "Result Data": json.dumps(result_data) if result_data else "None",
-    }
-    
-    if error_message:
-        log_data["Error"] = error_message
-        log_title = f"LOGO Query Failed: {original_query[:100]}"
-    else:
-        log_title = f"LOGO Query Executed: {original_query[:100]}"
-    
-    # Format message for Error Log
-    log_message = "\n".join([f"{key}: {value}" for key, value in log_data.items()])
-    
-    # title first, message second — matches frappe.log_error(title, message) signature
-    frappe.log_error(log_title, log_message)
-
-
-def _maybe_log_query(should_log, original_query, actual_query, params, columns, result_data=None, row_count=0, error=None):
-    """
-    Conditionally log a query execution if logging is enabled.
-    
-    Wraps _log_logo_query to avoid repetition across execute_query and
-    execute_query_with_conn for both success and error cases.
-    
-    Args:
-        should_log (bool|int): Whether logging is enabled
-        original_query (str): Original query with placeholders
-        actual_query (str): Query with replaced table names (may be None if replacement failed)
-        params (dict): Query parameters
-        columns (list): Column names
-        result_data (list, optional): Result rows
-        row_count (int, optional): Number of rows returned
-        error (Exception, optional): Exception instance if query failed
-    """
-    if not should_log:
-        return
-    _log_logo_query(
-        original_query=original_query,
-        generated_query=actual_query if actual_query is not None else "",
-        params=params,
-        result_data=result_data or [],
-        row_count=row_count,
-        columns=columns or [],
-        error_message=str(error) if error else None
-    )
-
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 def _normalize_company(company):
-    """
-    Normalize company number to 3-digit format.
-    
-    Args:
-        company (str|int): Company number (e.g., 1, "1", "01", "001")
-    
-    Returns:
-        str: 3-digit company number (e.g., "001")
-    """
-    if isinstance(company, int):
-        company = str(company)
-    
-    company = str(company).strip()
-    
-    if len(company) == 1:
-        return f"00{company}"
-    elif len(company) == 2:
-        return f"0{company}"
-    
-    return company
+	return str(company).strip().zfill(3)
 
 
 def _normalize_period(period):
-    """
-    Normalize period number to 2-digit format.
-    
-    Args:
-        period (str|int): Period number (e.g., 1, "1", "01")
-    
-    Returns:
-        str: 2-digit period number (e.g., "01")
-    """
-    if isinstance(period, int):
-        period = str(period)
-    
-    period = str(period).strip()
-    
-    if len(period) == 1:
-        return f"0{period}"
-    
-    return period
+	return str(period).strip().zfill(2)
 
+
+def _log_query(original_query, generated_query, params, result_data, row_count, columns, error_message=None):
+	log_data = {
+		"Original Query": original_query,
+		"Generated Query": generated_query,
+		"Parameters": json.dumps(params) if params else "None",
+		"Columns": ", ".join(columns) if columns else "None",
+		"Row Count": row_count,
+		"Result Data": json.dumps(result_data) if result_data else "None",
+	}
+
+	if error_message:
+		log_data["Error"] = error_message
+		title = "LOGO Query Failed"
+		message = "LOGO Query Failed: {0}\n".format(original_query)
+	else:
+		title = "LOGO Query Executed"
+		message = "LOGO Query Executed: {0}\n".format(original_query)
+	
+	message += "\n".join(["{0}: {1}".format(k, v) for k, v in log_data.items()])
+	frappe.log_error(title=title, message=message)
+
+
+# ---------------------------------------------------------------------------
+# Table-name resolution
+# ---------------------------------------------------------------------------
 
 def build_table_name(table_key, company=None, period=None):
-    """
-    Build LOGO table name based on table pattern.
-    
-    Args:
-        table_key (str): Table key like "INVOICE", "ITEMS", "CLCARD", "CAPIFIRM"
-        company (str|int, optional): LOGO company number (e.g., "001", "01", 1)
-        period (str, optional): Period number (e.g., "01"). Default None.
-    
-    Returns:
-        str: Full table name
-    
-    Example:
-        # Period-specific table
-        build_table_name("INVOICE", "001", "01")  # Returns "LG_001_01_INVOICE"
-        
-        # Company-specific table
-        build_table_name("CLCARD", "001")  # Returns "LG_001_CLCARD"
-        
-        # General table
-        build_table_name("CAPIFIRM")  # Returns "L_CAPIFIRM"
-    """
-    # Get table info from mapping
-    table_key_upper = table_key.upper()
-    
-    if table_key_upper not in LOGO_TABLE_MAP:
-        # Unknown table - default to period-specific pattern
-        if company:
-            normalized_company = _normalize_company(company)
-            if period:
-                normalized_period = _normalize_period(period)
-                return f"LG_{normalized_company}_{normalized_period}_{table_key_upper}"
-            else:
-                return f"LG_{normalized_company}_{table_key_upper}"
-        else:
-            return f"L_{table_key_upper}"
-    
-    table_name, table_pattern = LOGO_TABLE_MAP[table_key_upper]
-    
-    # Replace placeholders in pattern
-    result = table_pattern
-    
-    # Replace {COMPANY} placeholder
-    if "{COMPANY}" in result:
-        if not company:
-            frappe.throw(_("Company is required for table: {0}").format(table_key))
-        normalized_company = _normalize_company(company)
-        result = result.replace("{COMPANY}", normalized_company)
-    
-    # Replace {PERIOD} placeholder
-    if "{PERIOD}" in result:
-        normalized_period = _normalize_period(period or "01")
-        result = result.replace("{PERIOD}", normalized_period)
-    
-    return result
+	table_key_upper = table_key.upper()
+
+	if table_key_upper not in LOGO_TABLE_MAP:
+		if company:
+			normalized_company = _normalize_company(company)
+			if period:
+				normalized_period = _normalize_period(period)
+				return "LG_{0}_{1}_{2}".format(normalized_company, normalized_period, table_key_upper)
+			else:
+				return "LG_{0}_{1}".format(normalized_company, table_key_upper)
+		else:
+			return "L_{0}".format(table_key_upper)
+
+	_table_name, table_pattern = LOGO_TABLE_MAP[table_key_upper]
+	result = table_pattern
+
+	if "{COMPANY}" in result:
+		if not company:
+			frappe.throw(_("Company is required for table: {0}").format(table_key))
+		result = result.replace("{COMPANY}", _normalize_company(company))
+
+	if "{PERIOD}" in result:
+		result = result.replace("{PERIOD}", _normalize_period(period or "01"))
+
+	return result
 
 
 def replace_table_placeholders(query, company=None, period=None):
-    """
-    Replace table placeholders in query with actual table names.
-    
-    Args:
-        query (str): SQL query with placeholders like {INVOICE}, {CLCARD}
-        company (str|int, optional): LOGO company number
-        period (str, optional): Period number. Default "01" for period-specific tables.
-    
-    Returns:
-        str: Query with replaced table names
-    
-    Example:
-        # Period-specific table
-        query = "SELECT * FROM {INVOICE} WHERE LOGICALREF = 1"
-        result = replace_table_placeholders(query, "001", "01")
-        # Result: "SELECT * FROM LG_001_01_INVOICE WHERE LOGICALREF = 1"
-        
-        # Company-specific table
-        query = "SELECT * FROM {CLCARD} WHERE LOGICALREF = 1"
-        result = replace_table_placeholders(query, "001")
-        # Result: "SELECT * FROM LG_001_CLCARD WHERE LOGICALREF = 1"
-        
-        # General table
-        query = "SELECT * FROM {CAPIFIRM} WHERE NR = 1"
-        result = replace_table_placeholders(query)
-        # Result: "SELECT * FROM L_CAPIFIRM WHERE NR = 1"
-    """
-    import re
-    
-    # Find all placeholders like {TABLENAME}
-    placeholder_pattern = r'\{([A-Za-z_][A-Za-z0-9_]*)\}'
-    
-    def replace_match(match):
-        table_key = match.group(1)
-        return build_table_name(table_key, company, period)
-    
-    return re.sub(placeholder_pattern, replace_match, query)
+	placeholder_pattern = r'\{([A-Za-z_][A-Za-z0-9_]*)\}'
+
+	def replace_match(match):
+		return build_table_name(match.group(1), company, period)
+
+	return re.sub(placeholder_pattern, replace_match, query)
 
 
-def execute_query(query, company=None, period=None, params=None, as_dict=True):
-    """
-    Execute a SQL query on LOGO database and return results.
-    
-    This function replaces table placeholders like {INVOICE} with actual
-    table names based on the table pattern in LOGO_TABLE_MAP.
-    
-    Args:
-        query (str): SQL query with table placeholders (e.g., {INVOICE}, {CLCARD})
-        company (str|int, optional): LOGO company number (e.g., "001", "01", 1)
-        period (str, optional): Period number. Default "01" for period-specific tables.
-        params (dict, optional): Parameters for parameterized query
-        as_dict (bool, optional): Return results as dict. Default True.
-    
-    Returns:
-        frappe._dict: Result object with:
-            - op_result (bool): True if successful, False otherwise
-            - op_message (str): Success/error message
-            - data (list): List of rows (as dict or tuple based on as_dict)
-            - row_count (int): Number of rows returned
-            - columns (list): List of column names
-            - query (str): The executed query (with replaced table names)
-    
-    Example:
-        # Period-specific table query
-        result = execute_query(
-            "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(ref)s",
-            company="001",
-            period="01",
-            params={"ref": 123}
-        )
-        if result.op_result:
-            guid = result.data[0].get("GUID") if result.data else None
-        
-        # Company-specific table query
-        result = execute_query(
-            "SELECT DEFINITION_ FROM {CLCARD} WHERE LOGICALREF = %(ref)s",
-            company="001",
-            params={"ref": 123}
-        )
-        
-        # General table query
-        result = execute_query(
-            "SELECT * FROM {CAPIFIRM} WHERE NR = %(nr)s",
-            params={"nr": 1}
-        )
-    """
-    dctResult = frappe._dict({
-        "op_result": False,
-        "op_message": "",
-        "data": [],
-        "row_count": 0,
-        "columns": [],
-        "query": ""
-    })
-    
-    conn = None
-    
-    # Fetch settings before the try block so we can safely reference them in except clauses
-    settings = get_logo_db_settings()
-    should_log = settings.get("enable_logging_for_queries", 0)
-    
-    # actual_query is populated inside try; track it here so except blocks can reference it safely
-    actual_query = None
-    
-    try:
-        # Replace table placeholders
-        actual_query = replace_table_placeholders(query, company, period)
-        dctResult.query = actual_query
-        
-        # Connect to LOGO SQL Server
-        conn = pymssql.connect(
-            server=settings.server,
-            user=settings.user,
-            password=settings.password,
-            database=settings.database,
-            login_timeout=settings.login_timeout,
-            timeout=settings.timeout,
-        )
-        
-        cursor = conn.cursor()
-        
-        # Execute query
-        if params:
-            cursor.execute(actual_query, params)
-        else:
-            cursor.execute(actual_query)
-        
-        # Fetch results
-        rows = cursor.fetchall()
-        
-        # Get column names from cursor description
-        columns = []
-        if cursor.description:
-            columns = [column[0] for column in cursor.description]
-            dctResult.columns = columns
-        
-        # Convert to dict if requested
-        if as_dict and rows and columns:
-            dctResult.data = [
-                dict(zip(columns, row))
-                for row in rows
-            ]
-        else:
-            dctResult.data = rows
-        
-        dctResult.row_count = len(rows)
-        dctResult.op_result = True
-        dctResult.op_message = f"Query executed successfully. {dctResult.row_count} row(s) returned."
-        
-        _maybe_log_query(should_log, query, actual_query, params, columns,
-                         result_data=dctResult.data, row_count=dctResult.row_count)
-        
-    except pymssql.Error as e:
-        dctResult.op_message = f"Database error: {str(e)}"
-        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
-        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
-    
-    except Exception as e:
-        dctResult.op_message = f"Unexpected error: {str(e)}"
-        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
-        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
-    
-    finally:
-        if conn:
-            conn.close()
-    
-    return dctResult
-
+# ---------------------------------------------------------------------------
+# Connection context manager
+# ---------------------------------------------------------------------------
 
 @contextmanager
 def get_logo_connection():
-    """
-    Context manager for LOGO database connection.
-    
-    Use this when you need to execute multiple queries in sequence
-    to avoid the overhead of creating a new connection for each query.
-    
-    Yields:
-        pymssql.Connection: Database connection object
-    
-    Example:
-        with get_logo_connection() as conn:
-            result1 = execute_query_with_conn(conn, "SELECT ...", company="001")
-            result2 = execute_query_with_conn(conn, "SELECT ...", company="001")
-        # Connection is automatically closed when exiting the context
-    
-    Raises:
-        pymssql.Error: If connection fails
-    """
-    conn = None
-    try:
-        settings = get_logo_db_settings()
-        conn = pymssql.connect(
-            server=settings.server,
-            user=settings.user,
-            password=settings.password,
-            database=settings.database,
-            login_timeout=settings.login_timeout,
-            timeout=settings.timeout,
-        )
-        yield conn
-    finally:
-        if conn:
-            conn.close()
+	conn = None
+	try:
+		settings = get_logo_db_settings()
+		conn = pymssql.connect(
+			server=settings.server,
+			user=settings.user,
+			password=settings.password,
+			database=settings.database,
+			login_timeout=settings.login_timeout,
+			timeout=settings.timeout,
+			charset=settings.charset
+		)
+		yield conn
+	finally:
+		if conn:
+			conn.close()
 
 
-def execute_query_with_conn(conn, query, company=None, period=None, params=None, as_dict=True, enable_logging=None):
-    """
-    Execute a SQL query using an existing LOGO database connection.
-    
-    Use this with get_logo_connection() context manager for multiple queries.
-    
-    Args:
-        conn (pymssql.Connection): Existing database connection
-        query (str): SQL query with table placeholders (e.g., {INVOICE}, {CLCARD})
-        company (str|int, optional): LOGO company number (e.g., "001", "01", 1)
-        period (str, optional): Period number. Default "01" for period-specific tables.
-        params (dict, optional): Parameters for parameterized query
-        as_dict (bool, optional): Return results as dict. Default True.
-        enable_logging (bool, optional): Enable query logging. If not provided, checks LOGO SQL Settings.
-    
-    Returns:
-        frappe._dict: Result object with:
-            - op_result (bool): True if successful, False otherwise
-            - op_message (str): Success/error message
-            - data (list): List of rows (as dict or tuple based on as_dict)
-            - row_count (int): Number of rows returned
-            - columns (list): List of column names
-            - query (str): The executed query (with replaced table names)
-    
-    Example:
-        with get_logo_connection() as conn:
-            # First query
-            result1 = execute_query_with_conn(
-                conn,
-                "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(ref)s",
-                company="001",
-                period="01",
-                params={"ref": 123}
-            )
-            
-            # Second query using same connection
-            if result1.op_result and result1.data:
-                guid = result1.data[0].get("GUID")
-                result2 = execute_query_with_conn(
-                    conn,
-                    "SELECT * FROM {STLINE} WHERE INVOICEREF = %(ref)s",
-                    company="001",
-                    period="01",
-                    params={"ref": 123}
-                )
-    """
-    dctResult = frappe._dict({
-        "op_result": False,
-        "op_message": "",
-        "data": [],
-        "row_count": 0,
-        "columns": [],
-        "query": ""
-    })
-    
-    # Determine if logging should be enabled
-    should_log = enable_logging
-    if should_log is None:
-        # Check settings if not explicitly provided by the caller
-        try:
-            settings = get_logo_db_settings()
-            should_log = settings.get("enable_logging_for_queries", 0)
-        except Exception:
-            should_log = 0
-    
-    # actual_query is set inside try; initialise here so except blocks can reference it safely
-    actual_query = None
-    
-    try:
-        # Replace table placeholders
-        actual_query = replace_table_placeholders(query, company, period)
-        dctResult.query = actual_query
-        
-        cursor = conn.cursor()
-        
-        # Execute query
-        if params:
-            cursor.execute(actual_query, params)
-        else:
-            cursor.execute(actual_query)
-        
-        # Fetch results
-        rows = cursor.fetchall()
-        
-        # Get column names from cursor description
-        columns = []
-        if cursor.description:
-            columns = [column[0] for column in cursor.description]
-            dctResult.columns = columns
-        
-        # Convert to dict if requested
-        if as_dict and rows and columns:
-            dctResult.data = [
-                dict(zip(columns, row))
-                for row in rows
-            ]
-        else:
-            dctResult.data = rows
-        
-        dctResult.row_count = len(rows)
-        dctResult.op_result = True
-        dctResult.op_message = f"Query executed successfully. {dctResult.row_count} row(s) returned."
-        
-        _maybe_log_query(should_log, query, actual_query, params, columns,
-                         result_data=dctResult.data, row_count=dctResult.row_count)
-        
-    except pymssql.Error as e:
-        dctResult.op_message = f"Database error: {str(e)}"
-        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
-        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
-    
-    except Exception as e:
-        dctResult.op_message = f"Unexpected error: {str(e)}"
-        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
-        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
-    
-    return dctResult
+# ---------------------------------------------------------------------------
+# Core query execution
+# ---------------------------------------------------------------------------
+
+def execute_query(query, company=None, period=None, params=None, as_dict=True, conn=None):
+	"""Execute a single SQL query against the LOGO SQL Server.
+
+	Parameters
+	----------
+	query   : str  — SQL with optional ``{TABLE_KEY}`` placeholders.
+	company : str  — LOGO company number (zero-padded to 3 digits).
+	period  : str  — LOGO period number (zero-padded to 2 digits).
+	params  : tuple/dict — Query parameters passed to pymssql.
+	as_dict : bool — When True, rows are returned as dicts.
+	conn    : pymssql connection (optional).  When provided the caller owns
+	          the connection; it will NOT be closed inside this function.
+	          When None, a new connection is opened and closed automatically.
+
+	Returns
+	-------
+	frappe._dict with keys: op_result, op_message, data, row_count, columns, query.
+	"""
+	dctResult = frappe._dict({
+		"op_result": False,
+		"op_message": "",
+		"data": [],
+		"row_count": 0,
+		"columns": [],
+		"query": "",
+	})
+
+	# When the caller supplies a connection we skip creating/closing one.
+	owns_connection = conn is None
+	actual_query = None
+	should_log = 0
+
+	try:
+		settings = get_logo_db_settings()
+		should_log = settings.get("enable_logging_for_queries", 0)
+
+		actual_query = replace_table_placeholders(query, company, period)
+		dctResult.query = actual_query
+
+		if owns_connection:
+			conn = pymssql.connect(
+				server=settings.server,
+				user=settings.user,
+				password=settings.password,
+				database=settings.database,
+				login_timeout=settings.login_timeout,
+				timeout=settings.timeout,
+				charset=settings.charset
+			)
+
+		cursor = conn.cursor()
+		if params:
+			cursor.execute(actual_query, params)
+		else:
+			cursor.execute(actual_query)
+
+		rows = cursor.fetchall()
+		columns = [col[0] for col in cursor.description] if cursor.description else []
+		dctResult.columns = columns
+
+		if as_dict and rows and columns:
+			dctResult.data = [dict(zip(columns, row)) for row in rows]
+		else:
+			dctResult.data = rows
+
+		dctResult.row_count = len(rows)
+		dctResult.op_result = True
+		dctResult.op_message = "Query executed successfully. {0} row(s) returned.".format(dctResult.row_count)
+
+		if should_log:
+			_log_query(query, actual_query, params, dctResult.data, dctResult.row_count, columns)
+
+	except pymssql.Error as e:
+		dctResult.op_message = "Database error: {0}".format(str(e))
+		frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
+		if should_log:
+			_log_query(query, actual_query or "", params, [], 0, [], error_message=str(e))
+
+	except Exception as e:
+		dctResult.op_message = "Unexpected error: {0}".format(str(e))
+		frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
+		if should_log:
+			_log_query(query, actual_query or "", params, [], 0, [], error_message=str(e))
+
+	finally:
+		if owns_connection and conn:
+			conn.close()
+
+	return dctResult
 
 
-def execute_queries(queries, company=None, period=None, as_dict=True):
-    """
-    Execute multiple SQL queries using a single LOGO database connection.
-    
-    This is a convenience function that wraps get_logo_connection() and
-    execute_query_with_conn() for batch query execution.
-    
-    Args:
-        queries (list): List of query tuples, each containing:
-            - query (str): SQL query with table placeholders
-            - params (dict|None): Parameters for parameterized query (or None)
-        company (str|int, optional): LOGO company number (e.g., "001", "01", 1)
-        period (str, optional): Period number. Default "01" for period-specific tables.
-        as_dict (bool, optional): Return results as dict. Default True.
-    
-    Returns:
-        list: List of result objects (same order as input queries), each containing:
-            - op_result (bool): True if successful, False otherwise
-            - op_message (str): Success/error message
-            - data (list): List of rows (as dict or tuple based on as_dict)
-            - row_count (int): Number of rows returned
-            - columns (list): List of column names
-            - query (str): The executed query (with replaced table names)
-    
-    Example:
-        queries = [
-            ("SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(ref)s", {"ref": 123}),
-            ("SELECT DEFINITION_ FROM {CLCARD} WHERE LOGICALREF = %(ref)s", {"ref": 456}),
-            ("SELECT * FROM {CAPIFIRM} WHERE NR = %(nr)s", {"nr": 1}),
-        ]
-        
-        results = execute_queries(queries, company="001", period="01")
-        
-        for i, result in enumerate(results):
-            if result.op_result:
-                print(f"Query {i+1}: {result.row_count} rows")
-            else:
-                print(f"Query {i+1} failed: {result.op_message}")
-    """
-    results = []
-    
-    # Get logging setting from LOGO SQL Settings
-    enable_logging = 0
-    try:
-        settings = get_logo_db_settings()
-        enable_logging = settings.get("enable_logging_for_queries", 0)
-    except Exception:
-        pass
-    
-    try:
-        with get_logo_connection() as conn:
-            for query_item in queries:
-                # Handle both tuple and single query string
-                if isinstance(query_item, tuple):
-                    if len(query_item) >= 2:
-                        query, params = query_item[0], query_item[1]
-                    else:
-                        query, params = query_item[0], None
-                else:
-                    query = query_item
-                    params = None
-                
-                result = execute_query_with_conn(
-                    conn,
-                    query,
-                    company=company,
-                    period=period,
-                    params=params,
-                    as_dict=as_dict,
-                    enable_logging=enable_logging
-                )
-                results.append(result)
-    
-    except pymssql.Error as e:
-        # Connection failed - return error for all queries
-        error_result = frappe._dict({
-            "op_result": False,
-            "op_message": f"Connection error: {str(e)}",
-            "data": [],
-            "row_count": 0,
-            "columns": [],
-            "query": ""
-        })
-        
-        # Fill results with error for each query
-        for query_item in queries:
-            query = query_item[0] if isinstance(query_item, tuple) else query_item
-            err_result = error_result.copy()
-            err_result.query = query
-            results.append(err_result)
-        
-        frappe.log_error("LOGO DB Batch Query Connection Error", frappe.get_traceback())
-    
-    except Exception as e:
-        # Unexpected error - return error for all queries
-        error_result = frappe._dict({
-            "op_result": False,
-            "op_message": f"Unexpected error: {str(e)}",
-            "data": [],
-            "row_count": 0,
-            "columns": [],
-            "query": ""
-        })
-        
-        for query_item in queries:
-            query = query_item[0] if isinstance(query_item, tuple) else query_item
-            err_result = error_result.copy()
-            err_result.query = query
-            results.append(err_result)
-        
-        frappe.log_error("LOGO DB Batch Query Error", frappe.get_traceback())
-    
-    return results
-
+# ---------------------------------------------------------------------------
+# Connection test
+# ---------------------------------------------------------------------------
 
 def test_connection():
-    """
-    Test connection to LOGO database.
-    
-    Returns:
-        frappe._dict: Result object with:
-            - op_result (bool): True if connection successful
-            - op_message (str): Success/error message
-            - server_info (dict): Server information if connected
-    """
-    dctResult = frappe._dict({
-        "op_result": False,
-        "op_message": "",
-        "server_info": {}
-    })
-    
-    conn = None
-    
-    try:
-        settings = get_logo_db_settings()
-        
-        conn = pymssql.connect(
-            server=settings.server,
-            user=settings.user,
-            password=settings.password,
-            database=settings.database,
-            login_timeout=settings.login_timeout,
-            timeout=settings.timeout,
-        )
-        
-        cursor = conn.cursor()
-        
-        # Get SQL Server version
-        cursor.execute("SELECT @@VERSION")
-        version = cursor.fetchone()
-        
-        # Get current database
-        cursor.execute("SELECT DB_NAME()")
-        database = cursor.fetchone()
-        
-        dctResult.op_result = True
-        dctResult.op_message = "Connection successful"
-        dctResult.server_info = {
-            "server": settings.server,
-            "database": database[0] if database else settings.database,
-            "version": version[0] if version else "Unknown"
-        }
-        
-    except pymssql.Error as e:
-        dctResult.op_message = f"Connection failed: {str(e)}"
-        frappe.log_error("LOGO DB Connection Test Failed", frappe.get_traceback())
-    
-    except Exception as e:
-        dctResult.op_message = f"Unexpected error: {str(e)}"
-        frappe.log_error("LOGO DB Connection Test Failed", frappe.get_traceback())
-    
-    finally:
-        if conn:
-            conn.close()
-    
-    return dctResult
+	"""Verify that the configured LOGO SQL Server is reachable.
+
+	Returns
+	-------
+	frappe._dict with keys: op_result, op_message, server_info.
+	"""
+	dctResult = frappe._dict({
+		"op_result": False,
+		"op_message": "",
+		"server_info": {},
+	})
+
+	try:
+		settings = get_logo_db_settings()
+
+		with get_logo_connection() as conn:
+			cursor = conn.cursor()
+
+			cursor.execute("SELECT @@VERSION")
+			version = cursor.fetchone()
+
+			cursor.execute("SELECT DB_NAME()")
+			database = cursor.fetchone()
+
+		dctResult.op_result = True
+		dctResult.op_message = "Connection successful"
+		dctResult.server_info = {
+			"server": settings.server,
+			"database": database[0] if database else settings.database,
+			"version": version[0] if version else "Unknown",
+		}
+
+	except pymssql.Error as e:
+		dctResult.op_message = "Connection failed: {0}".format(str(e))
+		frappe.log_error("LOGO DB Connection Test Failed", frappe.get_traceback())
+
+	except Exception as e:
+		dctResult.op_message = "Unexpected error: {0}".format(str(e))
+		frappe.log_error("LOGO DB Connection Test Failed", frappe.get_traceback())
+
+	return dctResult
+
+
