@@ -477,6 +477,7 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 			parameterXML = docLObjectServiceSettings.default_parameter_xml
 
 		dctXMLInfo = get_logo_xml(doctype, docLObjectServiceSettings)
+		
 		if dctXMLInfo.op_result == True:
 			soap_body = dctXMLInfo.xml_template
 			parameterXML = dctXMLInfo.parameter_xml if dctXMLInfo.get('parameter_xml') else parameterXML
@@ -1003,6 +1004,4 @@ LIMIT 50
 			title="Sync Invoice Ref from Delivery Note Error"
 		)
 	
-	return dctResult
-
 	return dctResult

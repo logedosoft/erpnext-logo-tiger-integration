@@ -64,6 +64,8 @@ Connection Reuse (Performance Optimization):
     results = execute_queries(queries, company="001", period="01")
 """
 
+import json
+
 import frappe
 import pymssql
 from contextlib import contextmanager
@@ -159,8 +161,75 @@ def get_logo_db_settings():
         "password": docSettings.get_password("sql_user_password") if docSettings.sql_user_password else "",
         "database": docSettings.sql_database_name,
         "login_timeout": 10,
-        "timeout": 30
+        "timeout": 30,
+        "enable_logging_for_queries": docSettings.get("enable_logging_for_queries", 0)
     })
+
+
+def _log_logo_query(original_query, generated_query, params, result_data, row_count, columns, error_message=None):
+    """
+    Log query execution details to Error Log DocType.
+    
+    Args:
+        original_query (str): Original query with placeholders like {INVOICE}
+        generated_query (str): Query with actual table names
+        params (dict): Parameters used in the query
+        result_data (list): Result data returned from query
+        row_count (int): Number of rows returned
+        columns (list): Column names
+        error_message (str, optional): Error message if query failed
+    """
+    # Build log message
+    log_data = {
+        "Original Query": original_query,
+        "Generated Query": generated_query,
+        "Parameters": json.dumps(params) if params else "None",
+        "Columns": ", ".join(columns) if columns else "None",
+        "Row Count": row_count,
+        "Result Data": json.dumps(result_data) if result_data else "None",
+    }
+    
+    if error_message:
+        log_data["Error"] = error_message
+        log_title = f"LOGO Query Failed: {original_query[:100]}"
+    else:
+        log_title = f"LOGO Query Executed: {original_query[:100]}"
+    
+    # Format message for Error Log
+    log_message = "\n".join([f"{key}: {value}" for key, value in log_data.items()])
+    
+    # title first, message second — matches frappe.log_error(title, message) signature
+    frappe.log_error(log_title, log_message)
+
+
+def _maybe_log_query(should_log, original_query, actual_query, params, columns, result_data=None, row_count=0, error=None):
+    """
+    Conditionally log a query execution if logging is enabled.
+    
+    Wraps _log_logo_query to avoid repetition across execute_query and
+    execute_query_with_conn for both success and error cases.
+    
+    Args:
+        should_log (bool|int): Whether logging is enabled
+        original_query (str): Original query with placeholders
+        actual_query (str): Query with replaced table names (may be None if replacement failed)
+        params (dict): Query parameters
+        columns (list): Column names
+        result_data (list, optional): Result rows
+        row_count (int, optional): Number of rows returned
+        error (Exception, optional): Exception instance if query failed
+    """
+    if not should_log:
+        return
+    _log_logo_query(
+        original_query=original_query,
+        generated_query=actual_query if actual_query is not None else "",
+        params=params,
+        result_data=result_data or [],
+        row_count=row_count,
+        columns=columns or [],
+        error_message=str(error) if error else None
+    )
 
 
 def _normalize_company(company):
@@ -362,13 +431,17 @@ def execute_query(query, company=None, period=None, params=None, as_dict=True):
     
     conn = None
     
+    # Fetch settings before the try block so we can safely reference them in except clauses
+    settings = get_logo_db_settings()
+    should_log = settings.get("enable_logging_for_queries", 0)
+    
+    # actual_query is populated inside try; track it here so except blocks can reference it safely
+    actual_query = None
+    
     try:
         # Replace table placeholders
         actual_query = replace_table_placeholders(query, company, period)
         dctResult.query = actual_query
-        
-        # Get settings
-        settings = get_logo_db_settings()
         
         # Connect to LOGO SQL Server
         conn = pymssql.connect(
@@ -410,13 +483,18 @@ def execute_query(query, company=None, period=None, params=None, as_dict=True):
         dctResult.op_result = True
         dctResult.op_message = f"Query executed successfully. {dctResult.row_count} row(s) returned."
         
+        _maybe_log_query(should_log, query, actual_query, params, columns,
+                         result_data=dctResult.data, row_count=dctResult.row_count)
+        
     except pymssql.Error as e:
         dctResult.op_message = f"Database error: {str(e)}"
-        frappe.log_error(frappe.get_traceback(), f"LOGO DB Query Error: {query[:100]}")
+        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
+        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
     
     except Exception as e:
         dctResult.op_message = f"Unexpected error: {str(e)}"
-        frappe.log_error(frappe.get_traceback(), f"LOGO DB Query Error: {query[:100]}")
+        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
+        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
     
     finally:
         if conn:
@@ -462,7 +540,7 @@ def get_logo_connection():
             conn.close()
 
 
-def execute_query_with_conn(conn, query, company=None, period=None, params=None, as_dict=True):
+def execute_query_with_conn(conn, query, company=None, period=None, params=None, as_dict=True, enable_logging=None):
     """
     Execute a SQL query using an existing LOGO database connection.
     
@@ -475,6 +553,7 @@ def execute_query_with_conn(conn, query, company=None, period=None, params=None,
         period (str, optional): Period number. Default "01" for period-specific tables.
         params (dict, optional): Parameters for parameterized query
         as_dict (bool, optional): Return results as dict. Default True.
+        enable_logging (bool, optional): Enable query logging. If not provided, checks LOGO SQL Settings.
     
     Returns:
         frappe._dict: Result object with:
@@ -516,6 +595,19 @@ def execute_query_with_conn(conn, query, company=None, period=None, params=None,
         "query": ""
     })
     
+    # Determine if logging should be enabled
+    should_log = enable_logging
+    if should_log is None:
+        # Check settings if not explicitly provided by the caller
+        try:
+            settings = get_logo_db_settings()
+            should_log = settings.get("enable_logging_for_queries", 0)
+        except Exception:
+            should_log = 0
+    
+    # actual_query is set inside try; initialise here so except blocks can reference it safely
+    actual_query = None
+    
     try:
         # Replace table placeholders
         actual_query = replace_table_placeholders(query, company, period)
@@ -551,13 +643,18 @@ def execute_query_with_conn(conn, query, company=None, period=None, params=None,
         dctResult.op_result = True
         dctResult.op_message = f"Query executed successfully. {dctResult.row_count} row(s) returned."
         
+        _maybe_log_query(should_log, query, actual_query, params, columns,
+                         result_data=dctResult.data, row_count=dctResult.row_count)
+        
     except pymssql.Error as e:
         dctResult.op_message = f"Database error: {str(e)}"
-        frappe.log_error(frappe.get_traceback(), f"LOGO DB Query Error: {query[:100]}")
+        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
+        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
     
     except Exception as e:
         dctResult.op_message = f"Unexpected error: {str(e)}"
-        frappe.log_error(frappe.get_traceback(), f"LOGO DB Query Error: {query[:100]}")
+        frappe.log_error("LOGO DB Query Error", frappe.get_traceback())
+        _maybe_log_query(should_log, query, actual_query, params, [], error=e)
     
     return dctResult
 
@@ -603,6 +700,14 @@ def execute_queries(queries, company=None, period=None, as_dict=True):
     """
     results = []
     
+    # Get logging setting from LOGO SQL Settings
+    enable_logging = 0
+    try:
+        settings = get_logo_db_settings()
+        enable_logging = settings.get("enable_logging_for_queries", 0)
+    except Exception:
+        pass
+    
     try:
         with get_logo_connection() as conn:
             for query_item in queries:
@@ -622,7 +727,8 @@ def execute_queries(queries, company=None, period=None, as_dict=True):
                     company=company,
                     period=period,
                     params=params,
-                    as_dict=as_dict
+                    as_dict=as_dict,
+                    enable_logging=enable_logging
                 )
                 results.append(result)
     
@@ -644,7 +750,7 @@ def execute_queries(queries, company=None, period=None, as_dict=True):
             err_result.query = query
             results.append(err_result)
         
-        frappe.log_error(frappe.get_traceback(), "LOGO DB Batch Query Connection Error")
+        frappe.log_error("LOGO DB Batch Query Connection Error", frappe.get_traceback())
     
     except Exception as e:
         # Unexpected error - return error for all queries
@@ -663,7 +769,7 @@ def execute_queries(queries, company=None, period=None, as_dict=True):
             err_result.query = query
             results.append(err_result)
         
-        frappe.log_error(frappe.get_traceback(), "LOGO DB Batch Query Error")
+        frappe.log_error("LOGO DB Batch Query Error", frappe.get_traceback())
     
     return results
 
@@ -718,11 +824,11 @@ def test_connection():
         
     except pymssql.Error as e:
         dctResult.op_message = f"Connection failed: {str(e)}"
-        frappe.log_error(frappe.get_traceback(), "LOGO DB Connection Test Failed")
+        frappe.log_error("LOGO DB Connection Test Failed", frappe.get_traceback())
     
     except Exception as e:
         dctResult.op_message = f"Unexpected error: {str(e)}"
-        frappe.log_error(frappe.get_traceback(), "LOGO DB Connection Test Failed")
+        frappe.log_error("LOGO DB Connection Test Failed", frappe.get_traceback())
     
     finally:
         if conn:
