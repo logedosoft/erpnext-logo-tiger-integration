@@ -506,6 +506,7 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 			parameterXML = docLObjectServiceSettings.default_parameter_xml
 
 		dctXMLInfo = get_logo_xml(doctype, docLObjectServiceSettings)
+		
 		if dctXMLInfo.op_result == True:
 			soap_body = dctXMLInfo.xml_template
 			parameterXML = dctXMLInfo.parameter_xml if dctXMLInfo.get('parameter_xml') else parameterXML
@@ -857,5 +858,185 @@ def download_einvoice_pdf(sales_invoice_name):
 		frappe.log_error(
 			"eInvoice PDF Download Error",
 			f"Failed to download e-invoice PDF for {sales_invoice_name}: {frappe.get_traceback()}")
+
+
+def get_invoice_ref_from_stline(delivery_note_ref, company_no, period):
+	"""
+	Query LOGO STLINE to find invoice reference from delivery note receipt.
+	
+	STLINE stores line items. The relationship between receipt (Delivery Note)
+	and invoice is via INVOICEREF field.
+	
+	Args:
+		delivery_note_ref (str): LOGO reference from Delivery Note (custom_ld_logo_ref_no)
+		company_no (str): LOGO company number
+		period (str): Period number (01-12)
+	
+	Returns:
+		frappe._dict: Result with op_result, invoice_ref, op_message
+	"""
+	from tiger_integration.api.logo_db import execute_query
+	
+	dctResult = frappe._dict({
+		"op_result": False,
+		"invoice_ref": None,
+		"op_message": ""
+	})
+	
+	try:
+		# Query STLINE to find invoice reference from delivery note lines
+		query = """
+			SELECT DISTINCT INVOICEREF 
+			FROM {STLINE} 
+			WHERE STFICHEREF = %(delivery_note_ref)s
+			AND INVOICEREF IS NOT NULL
+			AND INVOICEREF != 0
+		"""
+		
+		result = execute_query(query, company_no, period=period, 
+						  params={"delivery_note_ref": delivery_note_ref})
+		
+		if result.op_result and result.data:
+			invoice_ref = result.data[0].get("INVOICEREF")
+			if invoice_ref:
+				dctResult.op_result = True
+				dctResult.invoice_ref = str(invoice_ref)
+				dctResult.op_message = f"Found invoice reference: {invoice_ref}"
+			else:
+				dctResult.op_message = "No invoice reference found in STLINE"
+		else:
+			dctResult.op_message = result.op_message or "Failed to query STLINE"
+	
+	except Exception as e:
+		dctResult.op_message = f"Error querying STLINE: {str(e)}"
+		frappe.log_error(
+			message=frappe.get_traceback(),
+			title="Get Invoice Ref from STLINE Error"
+		)
+	
+	return dctResult
+
+
+@frappe.whitelist()
+def sync_invoice_ref_from_delivery_note():
+	"""
+	Scheduled task to sync invoice references from Delivery Note to Sales Invoice.
+	
+	Finds Sales Invoices that:
+	- Are submitted (docstatus = 1)
+	- Have no custom_ld_logo_ref_no (or empty)
+	- Have linked Delivery Note with custom_ld_logo_ref_no
+	
+	For each, queries LOGO STLINE to find corresponding invoice.
+	If found, updates Sales Invoice custom_ld_logo_ref_no.
+	
+	This allows the existing download_einvoice_pdfs task to automatically
+	download the e-invoice PDF once the reference is set.
+	
+	Returns:
+		frappe._dict: Result with processed_count, updated_count, details
+	"""
+	dctResult = frappe._dict({
+		"op_result": False,
+		"processed_count": 0,
+		"updated_count": 0,
+		"details": []
+	})
+	
+	try:
+		# Check if the feature is enabled in LOGO Object Service Settings
+		settings = frappe.get_doc("LOGO Object Service Settings")
+		
+		if not frappe.db.get_single_value(
+			"LOGO Object Service Settings", 
+			"enable_elogo_pdf_attachments_for_invoices"
+		):
+			dctResult.op_message = "eInvoice PDF download feature is not enabled"
+			return dctResult
+		
+		logo_company_no = settings.logo_company_no
+		
+		# Find Sales Invoices that need to be synced
+		# Criteria: submitted, no LOGO ref, has linked Delivery Note with LOGO ref
+		invoices = frappe.db.sql("""
+SELECT 
+    si.name as invoice_name,
+    si.custom_ld_logo_ref_no as current_logo_ref,
+    sii.delivery_note as delivery_note,
+    dn.custom_ld_logo_ref_no as delivery_note_logo_ref
+FROM `tabSales Invoice` si
+JOIN `tabSales Invoice Item` sii ON si.name = sii.parent
+LEFT JOIN `tabDelivery Note` dn ON sii.delivery_note = dn.name
+WHERE si.docstatus = 1
+AND (si.custom_ld_logo_ref_no IS NULL OR si.custom_ld_logo_ref_no = '')
+AND sii.delivery_note IS NOT NULL
+AND sii.delivery_note != ''
+AND dn.custom_ld_logo_ref_no IS NOT NULL
+AND dn.custom_ld_logo_ref_no != ''
+ORDER BY si.creation DESC
+LIMIT 50
+		""", as_dict=True)
+		
+		dctResult.processed_count = len(invoices)
+		
+		for inv in invoices:
+			detail = {
+				"invoice": inv.invoice_name,
+				"delivery_note": inv.delivery_note,
+				"delivery_note_logo_ref": inv.delivery_note_logo_ref,
+				"status": "pending",
+				"message": ""
+			}
+			
+			try:
+				# Determine period from invoice date
+				period = "01"  # Default to first period
+				
+				# Query LOGO STLINE for invoice reference
+				stline_result = get_invoice_ref_from_stline(
+					inv.delivery_note_logo_ref,
+					logo_company_no,
+					period
+				)
+				
+				if stline_result.op_result and stline_result.invoice_ref:
+					# Update Sales Invoice with invoice reference
+					frappe.db.set_value(
+						"Sales Invoice", 
+						inv.invoice_name, 
+						"custom_ld_logo_ref_no", 
+						stline_result.invoice_ref
+					)
+					
+					detail["status"] = "success"
+					detail["invoice_logo_ref"] = stline_result.invoice_ref
+					detail["message"] = f"Updated with invoice ref: {stline_result.invoice_ref}"
+					dctResult.updated_count += 1
+				else:
+					detail["status"] = "not_found"
+					detail["message"] = stline_result.op_message or "No invoice found in LOGO"
+				
+			except Exception as e:
+				detail["status"] = "error"
+				detail["message"] = str(e)
+				frappe.log_error(
+					message=frappe.get_traceback(),
+					title=f"Sync Invoice Ref Failed for {inv.invoice_name}"
+				)
+			
+			dctResult.details.append(detail)
+		
+		# Commit all changes
+		frappe.db.commit()
+		
+		dctResult.op_result = True
+		dctResult.op_message = f"Processed {dctResult.processed_count} invoices, updated {dctResult.updated_count}"
+	
+	except Exception as e:
+		dctResult.op_message = f"Unexpected error: {str(e)}"
+		frappe.log_error(
+			message=frappe.get_traceback(),
+			title="Sync Invoice Ref from Delivery Note Error"
+		)
 	
 	return dctResult

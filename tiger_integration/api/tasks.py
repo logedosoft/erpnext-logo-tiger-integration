@@ -6,7 +6,7 @@ This module contains scheduled background tasks for the Tiger Integration app.
 
 import frappe
 import time
-from tiger_integration.api.logo_sync import download_einvoice_pdf
+from tiger_integration.api.logo_sync import download_einvoice_pdf, sync_invoice_ref_from_delivery_note
 
 
 def download_einvoice_pdfs():
@@ -75,5 +75,42 @@ def process_single_einvoice_download(invoice_name):
     except Exception as e:
         frappe.log_error(
             "eInvoice PDF Download Error",
+            frappe.get_traceback()
+        )
+
+
+def sync_invoice_refs_from_delivery_notes():
+    """
+    Scheduled task to sync invoice references from Delivery Note to Sales Invoice.
+    
+    This task runs periodically to find Sales Invoices that have:
+    - Linked Delivery Note with custom_ld_logo_ref_no
+    - But Sales Invoice itself has no custom_ld_logo_ref_no
+    
+    For each, it queries LOGO STLINE to find corresponding invoice reference.
+    If found, updates Sales Invoice.custom_ld_logo_ref_no.
+    
+    The existing download_einvoice_pdfs task will then pick up these invoices
+    and download their e-invoice PDFs.
+    
+    Runs hourly via scheduler_events.
+    """
+    try:
+        result = sync_invoice_ref_from_delivery_note()
+        
+        if result.get("op_result"):
+            frappe.logger().info(
+                f"Invoice ref sync completed: {result.get('processed_count')} processed, "
+                f"{result.get('updated_count')} updated"
+            )
+        else:
+            frappe.log_error(
+                "Invoice Ref Sync Failed",
+                result.get("op_message", "Unknown error")
+            )
+            
+    except Exception as e:
+        frappe.log_error(
+            "Invoice Ref Sync Error",
             frappe.get_traceback()
         )
