@@ -110,13 +110,17 @@ def get_logo_db_settings():
 		)
 
 	return frappe._dict({
-		"server": doc.sql_server_address,
-		"user": doc.sql_user_name,
+		"server": doc.sql_server_address or "",
+		"user": doc.sql_user_name or "",
 		"password": doc.get_password("sql_user_password") if doc.sql_user_password else "",
-		"database": doc.sql_database_name,
+		"database": doc.sql_database_name or "",
 		"login_timeout": 10,
 		"timeout": 30,
-		"charset": doc.get("sql_server_charset", "cp1254"),
+		# doc.get() only falls back to the default when the key is ABSENT from
+		# the dict, not when the stored value is None/empty.  Use an explicit
+		# fallback so that an unset sql_server_charset field in the saved
+		# settings record never reaches pymssql as None.
+		"charset": doc.get("sql_server_charset") or "cp1254",
 		"enable_logging_for_queries": doc.get("enable_logging_for_queries", 0),
 	})
 
