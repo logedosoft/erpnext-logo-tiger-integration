@@ -12,8 +12,6 @@ from bs4 import BeautifulSoup
 import html
 import pymssql
 
-from tiger_integration.logo_registry import get_data_type, get_firm_no, get_security_code, get_table_name
-
 def get_logo_xml(doctype, docLObjectServiceSettings):
 	#Gets info from LOGO Object Service Settings -> Mappings table
 	dctResult = frappe._dict({
@@ -485,8 +483,6 @@ def item_exists_in_logo(item_code):
 	if not docSQLSettings.enable_logo_sql_connection:
 		return False
 
-	table_name = get_table_name("Item")
-
 	try:
 		conn = pymssql.connect(
 			server=docSQLSettings.sql_server_address,
@@ -497,7 +493,7 @@ def item_exists_in_logo(item_code):
 			timeout=5,
 		)
 		cursor = conn.cursor()
-		cursor.execute(f"SELECT TOP 1 LOGICALREF FROM {table_name} WHERE CODE = %s AND ACTIVE = 0", (item_code,))
+		cursor.execute("SELECT TOP 1 LOGICALREF FROM LG_001_ITEMS WHERE CODE = %s AND ACTIVE = 0", (item_code,))
 		row = cursor.fetchone()
 		conn.close()
 		return row is not None
