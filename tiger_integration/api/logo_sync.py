@@ -7,6 +7,7 @@ from frappe import msgprint, _
 from frappe.model.document import Document
 from frappe.utils import cint, flt
 
+
 import requests
 from bs4 import BeautifulSoup
 import html
@@ -543,14 +544,12 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 			dctResult.op_message = dctValidationResult.op_message
 		else:
 			if doc.doctype == "Item":
-				doc.logo_dataType = get_data_type("Item")
 				#Find tax rate
 				doc.logo_tax_rate = get_item_tax_rate(doc.item_code, docLObjectServiceSettings)
 
 				soap_body = frappe.render_template(soap_body, context={'doc': doc, 'docLObjectServiceSettings': docLObjectServiceSettings, 'parameterXML': parameterXML})
 
 			elif doc.doctype in ["Supplier", "Customer"]:
-				doc.logo_dataType = get_data_type(doc.doctype)
 
 				if doc.doctype == "Customer" and doc.customer_type == "Individual":
 					doc.personal_company = 1
