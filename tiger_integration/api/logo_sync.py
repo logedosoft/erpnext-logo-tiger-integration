@@ -603,12 +603,17 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 			if docLObjectServiceSettings.enable_detailed_log:
 				frappe.log_error("LOGO Object Response", f"Status:{response.status_code}\nBody:{response.text}")
 
+			soup = BeautifulSoup(response.content, 'xml')
+
 			if response.status_code != 200:
 				dctResult.op_result = False
-				dctResult.op_message = f"HTTP Error {response.status_code}: {response.reason}"
+				dctResult.op_message = f"HTTP Error {response.status_code}: {response.reason}."
+				fault_string = soup.find('faultstring')
+				if fault_string.text:
+					dctResult.op_message += fault_string.text
 			else:
 				dctResult.raw_response = response.text
-				soup = BeautifulSoup(response.content, 'xml')
+				
 				result_status = soup.find('status')
 
 				if not result_status or not result_status.text:
