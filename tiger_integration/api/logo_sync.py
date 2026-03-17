@@ -603,12 +603,17 @@ def export_to_logo(doctype, docname, update_logo = False, session=None, settings
 			if docLObjectServiceSettings.enable_detailed_log:
 				frappe.log_error("LOGO Object Response", f"Status:{response.status_code}\nBody:{response.text}")
 
+			soup = BeautifulSoup(response.content, 'xml')
+
 			if response.status_code != 200:
 				dctResult.op_result = False
-				dctResult.op_message = f"HTTP Error {response.status_code}: {response.reason}"
+				dctResult.op_message = f"HTTP Error {response.status_code}: {response.reason}."
+				fault_string = soup.find('faultstring')
+				if fault_string.text:
+					dctResult.op_message += fault_string.text
 			else:
 				dctResult.raw_response = response.text
-				soup = BeautifulSoup(response.content, 'xml')
+				
 				result_status = soup.find('status')
 
 				if not result_status or not result_status.text:
@@ -673,20 +678,26 @@ def gzip_unzip_base64(content):
 
 
 @frappe.whitelist()
-def download_einvoice_pdf(sales_invoice_name):
+def download_elogo_document(doc_name, doctype, doc_type_code="EINVOICE", data_type="PDF"):
 	"""
-	Download e-invoice PDF from eLogo and attach to Sales Invoice.
+	Generic eLogo document downloader (core function).
+	
+	Downloads documents from eLogo and attaches to any Frappe document.
+	Supports invoices, delivery notes, and other document types via eLogo.
 	
 	This function:
-	1. Gets Sales Invoice and checks for custom_ld_logo_ref_no
-	2. Connects to LOGO SQL Server and queries GUID
+	1. Gets document and checks for custom_ld_logo_ref_no
+	2. Connects to LOGO SQL Server and queries UUID/GUID
 	3. Calls eLogo Login API to get sessionID
-	4. Calls eLogo getDocumentData API with sessionID and GUID
+	4. Calls eLogo getDocumentData API with sessionID, UUID, doc_type_code, data_type
 	5. Decodes base64 and unzips to extract PDF
-	6. Attaches PDF to Sales Invoice
+	6. Attaches PDF to the document
 	
 	Args:
-		sales_invoice_name (str): Sales Invoice name
+		doc_name (str): Document name (e.g., "SI-001", "DN-001")
+		doctype (str): Document type (e.g., "Sales Invoice", "Delivery Note")
+		doc_type_code (str): eLogo document type code (default "EINVOICE", alternatives "DESPATCHADVICE")
+		data_type (str): Data type to request (default "PDF")
 	
 	Returns:
 		frappe._dict: Result with op_result, op_message, and step-by-step details
@@ -712,26 +723,29 @@ def download_einvoice_pdf(sales_invoice_name):
 		})
 	
 	try:
-		# Step 1: Get Sales Invoice and check for LOGO reference
-		add_step("Step 1: Get Sales Invoice", "info", f"Fetching Sales Invoice: {sales_invoice_name}")
+		# Step 1: Get document and check for LOGO reference
+		add_step("Step 1: Get Document", "info", f"Fetching {doctype}: {doc_name}")
 		
-		if not frappe.has_permission("Sales Invoice", "read", sales_invoice_name):
+		if not frappe.has_permission(doctype, "read", doc_name):
 			frappe.throw("Insufficient Permission", frappe.PermissionError)
 		
-		docSalesInvoice = frappe.get_doc("Sales Invoice", sales_invoice_name)
-		logo_ref_no = docSalesInvoice.get("custom_ld_logo_ref_no")
+		doc = frappe.get_doc(doctype, doc_name)
+		logo_ref_no = doc.get("custom_ld_logo_ref_no")
 		
 		if logo_ref_no:
-			add_step("Step 1: Get Sales Invoice", "success", f"LOGO Reference No: {logo_ref_no}")
+			add_step("Step 1: Get Document", "success", f"LOGO Reference No: {logo_ref_no}")
 			
 			# Step 2: Check for existing PDF attachment
 			add_step("Step 2: Check Existing Attachments", "info", "Checking if PDF already attached...")
 			
+			# Build file pattern based on doctype - convert to abbreviated form
+			doctype_pattern = f"ELOGO_{doctype.replace(' ', '_').upper()}"
+			
 			existing_files = frappe.db.get_all("File",
 				filters={
-					"attached_to_doctype": "Sales Invoice",
-					"attached_to_name": sales_invoice_name,
-					"file_name": ["like", "%ELOGO_INVOICE%"]
+					"attached_to_doctype": doctype,
+					"attached_to_name": doc_name,
+					"file_name": ["like", f"%{doctype_pattern}%"]
 				},
 				fields=["name", "file_name"]
 			)
@@ -766,7 +780,10 @@ def download_einvoice_pdf(sales_invoice_name):
 					from tiger_integration.api.logo_db import execute_query
 					
 					# Use generic execute_query with table placeholder
-					query = "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(logo_ref_no)s"
+					if doctype == "Sales Invoice":
+						query = "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(logo_ref_no)s"
+					elif doctype == "Delivery Note":
+						query = "SELECT GUID FROM {STFICHE} WHERE LOGICALREF = %(logo_ref_no)s"
 					guid_result = execute_query(query, logo_company_no, period="01", params={"logo_ref_no": logo_ref_no})
 					
 					if guid_result.op_result:
@@ -786,12 +803,15 @@ def download_einvoice_pdf(sales_invoice_name):
 								add_step("Step 5: eLogo Login", "success", f"Session ID: {session_id[:20]}...")
 								
 								# Step 6: Get document data from eLogo
-								add_step("Step 6: Get Document Data", "info", f"Requesting PDF for UUID: {guid}...")
+								add_step("Step 6: Get Document Data", "info", 
+									f"Requesting {data_type} for UUID: {guid}, Doc Type Code: {doc_type_code}...")
 								
-								doc_result = elogo_get_document_data(elogo_service_address, session_id, guid)
+								doc_result = elogo_get_document_data(elogo_service_address, session_id, guid, 
+									doc_type=doc_type_code, data_type=data_type)
 								
 								if doc_result.op_result:
-									add_step("Step 6: Get Document Data", "success", f"Received ZIP file: {doc_result.file_name}, Hash: {doc_result.hash}")
+									add_step("Step 6: Get Document Data", "success", 
+										f"Received ZIP file: {doc_result.file_name}, Hash: {doc_result.hash}")
 									
 									# Step 7: Extract PDF from ZIP
 									add_step("Step 7: Extract PDF", "info", "Decoding base64 and extracting PDF from ZIP...")
@@ -799,21 +819,22 @@ def download_einvoice_pdf(sales_invoice_name):
 									pdf_result = unzip_base64_to_pdf(doc_result.base64_data)
 									
 									if pdf_result.op_result:
-										add_step("Step 7: Extract PDF", "success", f"Extracted PDF: {pdf_result.pdf_file_name}, Size: {len(pdf_result.pdf_content)} bytes")
+										add_step("Step 7: Extract PDF", "success", 
+											f"Extracted PDF: {pdf_result.pdf_file_name}, Size: {len(pdf_result.pdf_content)} bytes")
 										
-										# Step 8: Attach PDF to Sales Invoice
-										add_step("Step 8: Attach PDF", "info", "Attaching PDF to Sales Invoice...")
+										# Step 8: Attach PDF to document
+										add_step("Step 8: Attach PDF", "info", f"Attaching PDF to {doctype}...")
 										
 										try:
 											# Create file name
-											pdf_filename = f"ELOGO_INVOICE_{sales_invoice_name}.pdf"
+											pdf_filename = f"{doctype_pattern}_{doc_name}.pdf"
 											
 											# Save file using Frappe's File API
 											file_doc = frappe.get_doc({
 												"doctype": "File",
 												"file_name": pdf_filename,
-												"attached_to_doctype": "Sales Invoice",
-												"attached_to_name": sales_invoice_name,
+												"attached_to_doctype": doctype,
+												"attached_to_name": doc_name,
 												"is_private": 1,
 												"content": pdf_result.pdf_content
 											})
@@ -823,12 +844,12 @@ def download_einvoice_pdf(sales_invoice_name):
 											add_step("Step 8: Attach PDF", "success", 
 												f"PDF attached successfully: {pdf_filename}")
 											
-											# Add comment to Sales Invoice with step-by-step results
-											comment_text = "e-Invoice PDF Download Process Results:\n"
+											# Add comment to document with step-by-step results
+											comment_text = f"eLogo {doctype} PDF Download Process Results:\n"
 
 											# Success!
 											dctResult.op_result = True
-											dctResult.op_message = f"Successfully downloaded and attached e-invoice PDF: {pdf_filename}"
+											dctResult.op_message = f"Successfully downloaded and attached {doctype} PDF: {pdf_filename}"
 											
 											for step in dctResult.steps:
 												status_icon = "✅" if step.get("status") == "success" else ("❌" if step.get("status") == "error" else "ℹ️")
@@ -837,7 +858,7 @@ def download_einvoice_pdf(sales_invoice_name):
 											comment_text += f"\n\nFinal Result: {'SUCCESS' if dctResult.op_result else 'FAILED'}\n"
 											comment_text += f"Message: {dctResult.op_message}"
 											
-											docSalesInvoice.add_comment("Comment",
+											doc.add_comment("Comment",
 												text=comment_text,
 												comment_email=frappe.session.user,
 												comment_by=frappe.session.user)
@@ -845,7 +866,7 @@ def download_einvoice_pdf(sales_invoice_name):
 										except Exception as e:
 											add_step("Step 8: Attach PDF", "error", f"Attachment error: {str(e)}")
 											dctResult.op_message = f"Failed to attach PDF: {str(e)}"
-											frappe.log_error("PDF Attachment Error", frappe.get_traceback())
+											frappe.log_error(f"PDF Attachment Error ({doctype})", frappe.get_traceback())
 									else:
 										add_step("Step 7: Extract PDF", "error", pdf_result.op_message)
 										dctResult.op_message = f"PDF extraction failed: {pdf_result.op_message}"
@@ -865,15 +886,51 @@ def download_einvoice_pdf(sales_invoice_name):
 					add_step("Step 3: Get Settings", "error", "eLogo credentials not configured")
 					dctResult.op_message = "eLogo credentials not configured in LOGO Object Service Settings"
 		else:
-			add_step("Step 1: Get Sales Invoice", "error", "No LOGO reference number found (custom_ld_logo_ref_no is empty)")
-			dctResult.op_message = "Sales Invoice has no LOGO reference number"
-		
+			add_step("Step 1: Get Document", "error", "No LOGO reference number found (custom_ld_logo_ref_no is empty)")
+			dctResult.op_message = f"{doctype} has no LOGO reference number"
+	
 	except Exception as e:
+		dctResult.op_result = False
 		dctResult.op_message = f"Unexpected error: {str(e)}"
 		add_step("Error", "error", str(e))
 		frappe.log_error(
-			"eInvoice PDF Download Error",
-			f"Failed to download e-invoice PDF for {sales_invoice_name}: {frappe.get_traceback()}")
+			f"eLogo Document Download Error ({doctype})",
+			f"Failed to download {doctype} PDF for {doc_name}: {frappe.get_traceback()}")
+		
+	return dctResult
+
+@frappe.whitelist()
+def download_einvoice_pdf(sales_invoice_name):
+	"""
+	Download e-Invoice PDF from eLogo and attach to Sales Invoice.
+	
+	Wrapper function for download_elogo_document() for backward compatibility.
+	Uses default parameters for Sales Invoice (doctype="Sales Invoice", doc_type_code="EINVOICE", data_type="PDF").
+	
+	Args:
+		sales_invoice_name (str): Sales Invoice name
+	
+	Returns:
+		frappe._dict: Result with op_result, op_message, and step-by-step details
+	"""
+	return download_elogo_document(sales_invoice_name, "Sales Invoice", "EINVOICE", "PDF")
+
+
+@frappe.whitelist()
+def download_delivery_note_pdf(delivery_note_name):
+	"""
+	Download Dispatch/Delivery Note PDF from eLogo and attach to Delivery Note.
+	
+	Wrapper function for download_elogo_document() for Delivery Notes.
+	Uses parameters: doctype="Delivery Note", doc_type_code="DESPATCHADVICE", data_type="PDF".
+	
+	Args:
+		delivery_note_name (str): Delivery Note name
+	
+	Returns:
+		frappe._dict: Result with op_result, op_message, and step-by-step details
+	"""
+	return download_elogo_document(delivery_note_name, "Delivery Note", "DESPATCHADVICE", "PDF")
 
 
 def get_invoice_ref_from_stline(delivery_note_ref, company_no, period):

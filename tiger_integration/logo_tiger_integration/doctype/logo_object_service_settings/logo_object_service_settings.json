@@ -27,7 +27,8 @@
   "default_parameter_xml",
   "tests_tab",
   "sb_invoice_pdf_section",
-  "sales_invoice"
+  "sales_invoice",
+  "delivery_note"
  ],
  "fields": [
   {
@@ -158,17 +159,24 @@
   },
   {
    "default": "0",
-   "description": "Periodically gets PDFs from eLogo and attach it to the sales invoice.",
+   "description": "Periodically gets PDFs from eLogo and attach it to the sales invoice and delivery notes.",
    "fieldname": "enable_elogo_pdf_attachments_for_invoices",
    "fieldtype": "Check",
    "label": "Enable eLogo PDF attachments for invoices"
+  },
+  {
+   "description": "Tries to get the ID from LOGO DB. Then tries to get the PDF. It attaches the file to Delivery Note if it can find it.",
+   "fieldname": "delivery_note",
+   "fieldtype": "Link",
+   "label": "Delivery Note",
+   "options": "Delivery Note"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-02-25 23:37:58.726842",
+ "modified": "2026-03-17 11:59:43.229688",
  "modified_by": "Administrator",
  "module": "LOGO Tiger Integration",
  "name": "LOGO Object Service Settings",
