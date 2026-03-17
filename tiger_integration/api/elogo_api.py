@@ -92,7 +92,7 @@ def elogo_get_document_data(service_address, session_id, uuid, doc_type="EINVOIC
 		service_address (str): eLogo PostBox service URL
 		session_id (str): Session ID from login
 		uuid (str): Invoice GUID from LOGO database
-		doc_type (str): Document type (default: EINVOICE)
+		doc_type (str): Document type (default: EINVOICE or DESPATCHADVICE)
 		data_type (str): Data type (default: PDF)
 	
 	Returns:

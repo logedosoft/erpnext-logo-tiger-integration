@@ -174,7 +174,8 @@ jinja = {
 
 scheduler_events = {
 	"hourly": [
-		"tiger_integration.api.tasks.download_einvoice_pdfs"
+		"tiger_integration.api.tasks.download_einvoice_pdfs",
+		"tiger_integration.api.tasks.download_ewaybill_pdfs"
 	],
 	"cron": {
 		"*/15 * * * *": [

@@ -99,9 +99,9 @@ def sync_invoice_refs_from_delivery_notes():
         result = sync_invoice_ref_from_delivery_note()
         
         if result.get("op_result"):
-            frappe.logger().info(
-                f"Invoice ref sync completed: {result.get('processed_count')} processed, "
-                f"{result.get('updated_count')} updated"
+            frappe.log_error(
+                "Invoice ref sync completed",
+                f"{result.get('processed_count')} processed, {result.get('updated_count')} updated"
             )
         else:
             frappe.log_error(
