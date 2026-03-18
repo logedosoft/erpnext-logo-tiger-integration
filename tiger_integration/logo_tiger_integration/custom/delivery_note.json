@@ -676,7 +676,7 @@
    "property": "default",
    "property_type": "Text",
    "row_name": null,
-   "value": ""
+   "value": "MAT-DN-.YYYY.-.#########"
   },
   {
    "_assign": null,
@@ -699,7 +699,7 @@
    "property": "options",
    "property_type": "Text",
    "row_name": null,
-   "value": "\nTKS.YYYY.#########\nTKI.YYYY.#########\nIAD.YYYY.#########"
+   "value": "MAT-DN-.YYYY.-.#########"
   },
   {
    "_assign": null,
