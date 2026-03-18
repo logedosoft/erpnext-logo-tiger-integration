@@ -6,7 +6,7 @@ This module contains scheduled background tasks for the Tiger Integration app.
 
 import frappe
 import time
-from tiger_integration.api.logo_sync import download_einvoice_pdf, sync_invoice_ref_from_delivery_note
+from tiger_integration.api.logo_sync import download_einvoice_pdf, download_delivery_note_pdf, sync_invoice_ref_from_delivery_note
 
 
 def download_einvoice_pdfs():
@@ -54,6 +54,53 @@ def download_einvoice_pdfs():
                 enqueue_after_commit=True
             )
 
+
+def download_delivery_note_pdfs():
+    """
+    Scheduled task to download e-waybill PDFs for submitted Delivery Notes.
+    Runs hourly via scheduler_events.
+    
+    Process:
+    1. Check if enable_elogo_pdf_attachments_for_invoices is enabled in LOGO Object Service Settings
+    2. Find submitted Delivery Notes with LOGO reference but no ELOGO_DELIVERY_NOTE attachment
+    3. Process in batches (max 20 per run)
+    4. Use frappe.enqueue for each delivery note to ensure non-blocking execution
+    5. Include rate limiting between API calls
+    """
+    # Check if the feature is enabled in LOGO Object Service Settings
+    if frappe.db.get_single_value(
+        "LOGO Object Service Settings", 
+        "enable_elogo_pdf_attachments_for_invoices"
+    ):
+        # Get eligible delivery notes
+        delivery_notes = frappe.db.sql("""
+            SELECT dn.name
+            FROM `tabDelivery Note` dn
+            WHERE dn.docstatus = 1
+            AND dn.custom_ld_logo_ref_no IS NOT NULL
+            AND dn.custom_ld_logo_ref_no != ''
+            AND NOT EXISTS (
+                SELECT 1 FROM `tabFile` f
+                WHERE f.attached_to_doctype = 'Delivery Note'
+                AND f.attached_to_name = dn.name
+                AND f.file_name LIKE '%ELOGO_DELIVERY_NOTE%'
+            )
+            ORDER BY dn.creation DESC
+            LIMIT 20
+        """, as_dict=True)
+        
+        for dn in delivery_notes:
+            # Enqueue each delivery note processing as separate job
+            frappe.enqueue(
+                process_single_delivery_note_download,
+                queue="long",
+                timeout=300,
+                delivery_note_name=dn.name,
+                is_async=True,
+                enqueue_after_commit=True
+            )
+
+
 def process_single_einvoice_download(invoice_name):
     """
     Process a single e-invoice PDF download.
@@ -75,6 +122,31 @@ def process_single_einvoice_download(invoice_name):
     except Exception as e:
         frappe.log_error(
             "eInvoice PDF Download Error",
+            frappe.get_traceback()
+        )
+
+
+def process_single_delivery_note_download(delivery_note_name):
+    """
+    Process a single delivery note PDF download.
+    Called via frappe.enqueue for non-blocking execution.
+    
+    Args:
+        delivery_note_name (str): Name of the Delivery Note to process
+    """
+    try:
+        result = download_delivery_note_pdf(delivery_note_name)
+        
+        # Only log failures - success is already commented on the delivery note
+        if not result.get("op_result"):
+            frappe.log_error(
+                "Delivery Note PDF Download Failed",
+                f"Failed to download delivery note PDF for {delivery_note_name}: {result.get('op_message')}"
+            )
+            
+    except Exception as e:
+        frappe.log_error(
+            "Delivery Note PDF Download Error",
             frappe.get_traceback()
         )
 
