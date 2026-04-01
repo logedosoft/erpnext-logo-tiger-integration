@@ -781,9 +781,9 @@ def download_elogo_document(doc_name, doctype, doc_type_code="EINVOICE", data_ty
 					
 					# Use generic execute_query with table placeholder
 					if doctype == "Sales Invoice":
-						query = "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(logo_ref_no)s"
+						query = "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(logo_ref_no)s AND TRCODE = 8"
 					elif doctype == "Delivery Note":
-						query = "SELECT GUID FROM {STFICHE} WHERE LOGICALREF = %(logo_ref_no)s"
+						query = "SELECT GUID FROM {STFICHE} WHERE LOGICALREF = %(logo_ref_no)s AND TRCODE = 8"
 					guid_result = execute_query(query, logo_company_no, period="01", params={"logo_ref_no": logo_ref_no})
 					
 					if guid_result.op_result:
