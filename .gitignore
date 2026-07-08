@@ -4,5 +4,13 @@
 *.swp
 tags
 node_modules
-__pycache__.emdash/
+__pycache__
+
+# AI / Editor tools
+.kilo/
+.kilocodeignore
 .emdash/
+.emdash.json
+.claude/
+.opencode/
+.playwright-mcp

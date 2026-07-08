@@ -781,16 +781,26 @@ def download_elogo_document(doc_name, doctype, doc_type_code="EINVOICE", data_ty
 					
 					# Use generic execute_query with table placeholder
 					if doctype == "Sales Invoice":
-						query = "SELECT GUID FROM {INVOICE} WHERE LOGICALREF = %(logo_ref_no)s AND TRCODE = 8"
+						query = "SELECT GUID, EINVOICE FROM {INVOICE} WHERE LOGICALREF = %(logo_ref_no)s AND TRCODE = 8"
 					elif doctype == "Delivery Note":
 						query = "SELECT GUID FROM {STFICHE} WHERE LOGICALREF = %(logo_ref_no)s AND TRCODE = 8"
 					guid_result = execute_query(query, logo_company_no, period="01", params={"logo_ref_no": logo_ref_no})
-					
+
 					if guid_result.op_result:
 						if guid_result.data:
 							guid = guid_result.data[0].get("GUID")
 							dctResult.guid = guid
 							add_step("Step 4: Query LOGO DB", "success", f"Found GUID: {guid}")
+
+							# LOGO INVOICE.EINVOICE: 1 = e-Fatura, 2 = e-Arşiv; pick eLogo docType accordingly
+							if doctype == "Sales Invoice":
+								dEinvoiceFlag = guid_result.data[0].get("EINVOICE")
+								if dEinvoiceFlag == 2:
+									doc_type_code = "EARCHIVE"
+								elif dEinvoiceFlag == 0:
+									dctResult.op_result = False
+									dctResult.op_message = "Invoice is not an e-document; no PDF available in eLogo"
+									return dctResult
 							
 							# Step 5: Login to eLogo
 							add_step("Step 5: eLogo Login", "info", f"Logging in as {elogo_username}...")
