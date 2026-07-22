@@ -17,7 +17,7 @@ def download_einvoice_pdfs():
     Process:
     1. Check if enable_elogo_pdf_attachments_for_invoices is enabled in LOGO Object Service Settings
     2. Find submitted Sales Invoices with LOGO reference but no ELOGO_INVOICE attachment
-    3. Process in batches (max 20 per run)
+    3. Process in batches (max 100 per run)
     4. Use frappe.enqueue for each invoice to ensure non-blocking execution
     5. Include rate limiting between API calls
     """
@@ -37,10 +37,10 @@ def download_einvoice_pdfs():
                 SELECT 1 FROM `tabFile` f
                 WHERE f.attached_to_doctype = 'Sales Invoice'
                 AND f.attached_to_name = si.name
-                AND f.file_name LIKE '%ELOGO_INVOICE%'
+                AND f.file_name LIKE '%ELOGO_SALES_INVOICE%'
             )
             ORDER BY si.creation DESC
-            LIMIT 20
+            LIMIT 100
         """, as_dict=True)
         
         for invoice in invoices:
@@ -63,7 +63,7 @@ def download_delivery_note_pdfs():
     Process:
     1. Check if enable_elogo_pdf_attachments_for_invoices is enabled in LOGO Object Service Settings
     2. Find submitted Delivery Notes with LOGO reference but no ELOGO_DELIVERY_NOTE attachment
-    3. Process in batches (max 20 per run)
+    3. Process in batches (max 100 per run)
     4. Use frappe.enqueue for each delivery note to ensure non-blocking execution
     5. Include rate limiting between API calls
     """
@@ -86,7 +86,7 @@ def download_delivery_note_pdfs():
                 AND f.file_name LIKE '%ELOGO_DELIVERY_NOTE%'
             )
             ORDER BY dn.creation DESC
-            LIMIT 20
+            LIMIT 100
         """, as_dict=True)
         
         for dn in delivery_notes:
