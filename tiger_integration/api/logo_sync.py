@@ -819,6 +819,16 @@ def download_elogo_document(doc_name, doctype, doc_type_code="EINVOICE", data_ty
 								doc_result = elogo_get_document_data(elogo_service_address, session_id, guid, 
 									doc_type=doc_type_code, data_type=data_type)
 								
+								# Retry with alternate doc_type_code if first attempt fails
+								if not doc_result.op_result and doctype == "Sales Invoice":
+									strAlternateCode = "EARCHIVE" if doc_type_code == "EINVOICE" else "EINVOICE"
+									add_step("Step 6: Get Document Data", "info", 
+										f"Retrying with Doc Type Code: {strAlternateCode}...")
+									doc_result = elogo_get_document_data(elogo_service_address, session_id, guid, 
+										doc_type=strAlternateCode, data_type=data_type)
+									if doc_result.op_result:
+										doc_type_code = strAlternateCode
+								
 								if doc_result.op_result:
 									add_step("Step 6: Get Document Data", "success", 
 										f"Received ZIP file: {doc_result.file_name}, Hash: {doc_result.hash}")
